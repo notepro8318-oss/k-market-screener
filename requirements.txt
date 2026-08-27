@@ -1,0 +1,8 @@
+streamlit
+pandas
+requests
+FinanceDataReader
+opendartreader
+beautifulsoup4
+lxml
+tqdm
