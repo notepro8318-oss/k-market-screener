@@ -1,7 +1,7 @@
 streamlit
 pandas
 requests
-FinanceDataReader
+finance-datareader
 opendartreader
 beautifulsoup4
 lxml
