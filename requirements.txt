@@ -1,8 +1,8 @@
-streamlit
-pandas
-requests
-finance-datareader
-opendartreader
-beautifulsoup4
-lxml
-tqdm
+streamlit==1.59.2
+pandas==2.3.3
+requests==2.34.2
+finance-datareader==0.9.202
+opendartreader==0.3.3
+beautifulsoup4==4.15.0
+lxml==6.1.1
+tqdm==4.69.0
