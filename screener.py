@@ -25,6 +25,23 @@ DEFAULT_FILTER_CRITERIA = {
 DEFAULT_TARGET_YEAR = 2024
 
 
+def create_dart_client(dart_api_key, retries=4, delay=5, log=print):
+    """
+    OpenDartReader()는 최초 생성 시 DART 서버에서 전체 기업코드 목록을 내려받는데,
+    이 호출에 재시도 로직이 없어 일시적인 네트워크 지연/타임아웃에도 바로 실패한다.
+    (성공하면 그날 하루치를 docs_cache/에 캐싱해두므로 이후 호출은 즉시 재사용된다.)
+    """
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            return OpenDartReader(dart_api_key)
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            log(f"⚠ DART 서버 연결 실패 ({attempt}/{retries}차 시도): {e.__class__.__name__} - {delay}초 후 재시도...")
+            time.sleep(delay)
+    raise last_err
+
+
 def _fetch_naver_per_table(sosok):
     """Naver 시가총액 페이지에서 종목코드별 PER을 스크래핑 (로그인 불필요)."""
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -237,7 +254,7 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, re
 # ==========================================
 def run_pipeline(dart_api_key, target_year, criteria, log=print, progress_cb=None):
     """전체 스크리닝 파이프라인을 실행하고 최종 결과 DataFrame을 반환한다."""
-    dart = OpenDartReader(dart_api_key)
+    dart = create_dart_client(dart_api_key, log=log)
     df_candidates = run_first_stage_screening(criteria, log=log, progress_cb=progress_cb)
 
     results = []

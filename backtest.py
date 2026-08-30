@@ -6,9 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 import FinanceDataReader as fdr
-from opendartreader import OpenDartReader
 
-from screener import evaluate_financials_and_fscore
+from screener import create_dart_client, evaluate_financials_and_fscore
 
 CACHE_DIR = Path(__file__).parent / "backtest_cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -96,7 +95,7 @@ def run_backtest(dart_api_key, criteria, start_year, end_year, universe_size=500
     log("▷ 벤치마크 지수 이력 수집 중...")
     bench_hist = fdr.DataReader(BENCHMARKS.get(benchmark, "KS11"), hist_start, today)
 
-    dart = OpenDartReader(dart_api_key)
+    dart = create_dart_client(dart_api_key, log=log)
 
     report_years = [y for y in range(start_year, end_year + 1) if _rebalance_date(y) <= today]
     yearly_rows = []
