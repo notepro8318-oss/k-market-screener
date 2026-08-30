@@ -5,7 +5,7 @@ from ui_common import get_dart_api_key
 
 st.set_page_config(page_title="K-Market Value Screener", page_icon="📈", layout="wide")
 
-st.title("📈 한국 저평가 우량주 스크리너")
+st.title("📈 수익가치주 찾기")
 st.caption("시가총액 · PER · PBR · 수익성(OPM/ROA/ROE) · Piotroski F-Score 기반 2단계 필터링")
 
 
