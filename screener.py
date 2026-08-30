@@ -22,8 +22,6 @@ DEFAULT_FILTER_CRITERIA = {
     "MIN_FSCORE": 7,                     # 최종 Piotroski F-Score 컷오프
 }
 
-DEFAULT_TARGET_YEAR = 2024
-
 
 def create_dart_client(dart_api_key, retries=4, delay=5, log=print):
     """
@@ -127,69 +125,193 @@ def run_first_stage_screening(criteria, log=print, progress_cb=None):
 
 
 # ==========================================
-# 2단계: 재무제표 파싱, 수익성(OPM/ROA/ROE) 및 F-Score 연산
+# 2단계: 재무제표 파싱 (TTM 기준), 수익성(OPM/ROA/ROE) 및 F-Score 연산
 # ==========================================
+NET_INCOME_NAMES = [
+    "당기순이익", "당기순이익(손실)", "연결당기순이익",
+    "분기순이익", "분기순이익(손실)",
+    "반기순이익", "반기순이익(손실)",
+]
+REVENUE_NAMES = ["매출액", "수익(매출액)", "영업수익"]
+OP_INCOME_NAMES = ["영업이익", "영업이익(손실)"]
+GROSS_PROFIT_NAMES = ["매출총이익", "매출총이익(손실)"]
+CFO_NAMES = ["영업활동현금흐름", "영업활동으로인한현금흐름"]
+
+
 def clean_num(val):
     if pd.isna(val) or val == "" or val == "-":
         return 0.0
     return float(str(val).replace(",", "").strip())
 
 
-def get_account_value(df, account_names, col_name):
+def _amount(row, candidates):
+    """row에서 candidates 순서대로 값이 있는(NaN이 아닌) 첫 컬럼값을 반환."""
+    for col in candidates:
+        if col in row.index:
+            val = row[col]
+            if pd.notna(val) and str(val).strip() not in ("", "-"):
+                return clean_num(val)
+    return None
+
+
+def get_amount(df, account_names, current=True):
+    """
+    계정값을 시점/누적 컬럼 우선순위에 따라 추출한다.
+    - current=True : 당기 값. 분기/반기 보고서는 당기누적(thstrm_add_amount, YTD)을 우선 사용하고
+      없으면(BS 항목이거나 사업보고서) thstrm_amount(시점값/연간값)로 대체한다.
+    - current=False: 비교 시점 값. 전년동기누적(frmtrm_add_amount)을 우선 사용하고, 없으면
+      frmtrm_q_amount(전년동기 단일분기, CF 등에 쓰임), 그마저 없으면 frmtrm_amount
+      (사업보고서의 전기 전체값 또는 BS의 전기말 잔액)로 대체한다.
+    이 우선순위 덕분에 사업보고서(연간)·반기·분기 보고서, BS·IS·CF 항목 모두 동일한 함수로
+    올바르게 처리된다.
+    """
     for name in account_names:
         matched = df[df["account_nm"].str.strip() == name]
-        if not matched.empty:
-            return clean_num(matched[col_name].values[0])
+        if matched.empty:
+            continue
+        row = matched.iloc[0]
+        if current:
+            val = _amount(row, ["thstrm_add_amount", "thstrm_amount"])
+        else:
+            val = _amount(row, ["frmtrm_add_amount", "frmtrm_q_amount", "frmtrm_amount"])
+        if val is not None:
+            return val
     return 0.0
 
 
-def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, require_per=False):
+def _report_candidates(as_of):
     """
-    require_per=True이면 PER도 (marcap / 당기순이익)으로 직접 계산해 MAX_PER 조건까지
-    검증하고 결과에 포함한다. 백테스트처럼 특정 과거 시점의 실시간 PER 스냅샷을 구할 수
-    없는 경우에 사용한다 (실시간 스크리닝은 1단계에서 Naver PER을 이미 적용했으므로 기본값 False).
+    as_of 시점까지 공시되었을 것으로 기대되는 (사업연도, reprt_code)를 최신순으로 반환.
+    DART 공시 마감일: 사업보고서 3/31, 1분기 5/15, 반기 8/14, 3분기 11/14 (달력 연도 기준).
     """
+    as_of = pd.Timestamp(as_of)
+    y = as_of.year
+    deadlines = [
+        (pd.Timestamp(y, 3, 31), y - 1, "11011"),
+        (pd.Timestamp(y, 5, 15), y, "11013"),
+        (pd.Timestamp(y, 8, 14), y, "11012"),
+        (pd.Timestamp(y, 11, 14), y, "11014"),
+    ]
+    passed = [(yr, code) for dl, yr, code in deadlines if as_of >= dl]
+    candidates = list(reversed(passed))
+    # 예상보다 공시가 늦었을 경우를 대비한 안전망
+    candidates += [
+        (y - 1, "11014"), (y - 1, "11012"), (y - 1, "11013"), (y - 1, "11011"),
+        (y - 2, "11011"),
+    ]
+    seen = set()
+    ordered = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
+def _fetch_report(dart, ticker, bsns_year, reprt_code):
     try:
-        # 연결재무제표(CFS) 우선, 미존재 시 개별(OFS)
-        df_fs = dart.finstate_all(ticker, bsns_year, reprt_code="11011", fs_div="CFS")
+        df_fs = dart.finstate_all(ticker, bsns_year, reprt_code=reprt_code, fs_div="CFS")
         if df_fs is None or df_fs.empty:
-            df_fs = dart.finstate_all(ticker, bsns_year, reprt_code="11011", fs_div="OFS")
+            df_fs = dart.finstate_all(ticker, bsns_year, reprt_code=reprt_code, fs_div="OFS")
         if df_fs is None or df_fs.empty:
             return None
+        return df_fs
     except Exception:
         return None
 
-    col_t = "thstrm_amount"
-    col_prev = "frmtrm_amount"
 
-    bs = df_fs[df_fs["sj_div"] == "BS"]
-    is_df = df_fs[df_fs["sj_div"].isin(["IS", "CIS"])]
-    cf = df_fs[df_fs["sj_div"] == "CF"]
+def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, require_per=False, max_report_attempts=4):
+    """
+    as_of 시점까지 공시된 가장 최근 보고서(사업/반기/분기)를 찾아 TTM(최근 12개월 합산)
+    기준으로 매출·영업이익·순이익·매출총이익·영업활동현금흐름을 계산한다.
 
-    # 계정과목 추출
-    total_assets_t = get_account_value(bs, ["자산총계"], col_t)
-    total_assets_prev = get_account_value(bs, ["자산총계"], col_prev)
-    total_equity_t = get_account_value(bs, ["자본총계"], col_t)
-    current_assets_t = get_account_value(bs, ["유동자산"], col_t)
-    current_assets_prev = get_account_value(bs, ["유동자산"], col_prev)
-    current_liab_t = get_account_value(bs, ["유동부채"], col_t)
-    current_liab_prev = get_account_value(bs, ["유동부채"], col_prev)
-    non_current_liab_t = get_account_value(bs, ["비유동부채", "장기차입금"], col_t)
-    non_current_liab_prev = get_account_value(bs, ["비유동부채", "장기차입금"], col_prev)
+    TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
+    (분기/반기 보고서는 DART가 전년동기누적(frmtrm_add_amount)을 함께 내려주므로 추가 조회 없이
+    계산 가능하고, 직전 사업연도 전체만 사업보고서를 한 번 더 조회해서 얻는다. 가장 최근 보고서가
+    이미 사업보고서이면 그 값 자체가 TTM이므로 추가 조회가 필요 없다.)
 
-    revenue_t = get_account_value(is_df, ["매출액", "수익(매출액)", "영업수익"], col_t)
-    revenue_prev = get_account_value(is_df, ["매출액", "수익(매출액)", "영업수익"], col_prev)
-    op_income_t = get_account_value(is_df, ["영업이익", "영업이익(손실)"], col_t)
-    net_income_t = get_account_value(is_df, ["당기순이익", "당기순이익(손실)", "연결당기순이익"], col_t)
-    net_income_prev = get_account_value(is_df, ["당기순이익", "당기순이익(손실)", "연결당기순이익"], col_prev)
-    gross_profit_t = get_account_value(is_df, ["매출총이익", "매출총이익(손실)"], col_t)
-    gross_profit_prev = get_account_value(is_df, ["매출총이익", "매출총이익(손실)"], col_prev)
+    재무상태표(BS) 항목은 시점값이므로 항상 가장 최근 보고서의 당기말 값을 사용하고,
+    F-Score의 전년 대비 비교는 재무상태표는 직전 사업연도말(전기), 손익 항목은 직전
+    사업연도 전체(당기 대비 한 해 전 값)를 기준으로 한다.
+
+    require_per=True이면 PER도 (marcap / TTM 당기순이익)으로 직접 계산해 MAX_PER 조건까지
+    검증하고 결과에 포함한다. 백테스트처럼 특정 과거 시점의 실시간 PER 스냅샷을 구할 수
+    없는 경우에 사용한다 (실시간 스크리닝은 1단계에서 Naver PER을 이미 적용했으므로 기본값 False).
+    """
+    candidates = _report_candidates(as_of)[:max_report_attempts]
+
+    df_current = None
+    current_year = current_code = None
+    for yr, code in candidates:
+        df_current = _fetch_report(dart, ticker, yr, code)
+        if df_current is not None:
+            current_year, current_code = yr, code
+            break
+    if df_current is None:
+        return None
+
+    bs = df_current[df_current["sj_div"] == "BS"]
+    is_df = df_current[df_current["sj_div"].isin(["IS", "CIS"])]
+    cf = df_current[df_current["sj_div"] == "CF"]
+
+    # 재무상태표: 항상 가장 최근 보고서의 당기말/전기말 값 사용 (시점값이라 TTM 개념 불필요)
+    total_assets_t = get_amount(bs, ["자산총계"], current=True)
+    total_assets_prev = get_amount(bs, ["자산총계"], current=False)
+    total_equity_t = get_amount(bs, ["자본총계"], current=True)
+    current_assets_t = get_amount(bs, ["유동자산"], current=True)
+    current_assets_prev = get_amount(bs, ["유동자산"], current=False)
+    current_liab_t = get_amount(bs, ["유동부채"], current=True)
+    current_liab_prev = get_amount(bs, ["유동부채"], current=False)
+    non_current_liab_t = get_amount(bs, ["비유동부채", "장기차입금"], current=True)
+    non_current_liab_prev = get_amount(bs, ["비유동부채", "장기차입금"], current=False)
+    cap_t = get_amount(bs, ["자본금"], current=True)
+    cap_prev = get_amount(bs, ["자본금"], current=False)
+
+    if current_code == "11011":
+        # 이미 사업보고서 -> 당기 자체가 TTM, 전기는 그 직전 사업연도
+        revenue_t = get_amount(is_df, REVENUE_NAMES, current=True)
+        revenue_prev = get_amount(is_df, REVENUE_NAMES, current=False)
+        op_income_t = get_amount(is_df, OP_INCOME_NAMES, current=True)
+        net_income_t = get_amount(is_df, NET_INCOME_NAMES, current=True)
+        net_income_prev = get_amount(is_df, NET_INCOME_NAMES, current=False)
+        gross_profit_t = get_amount(is_df, GROSS_PROFIT_NAMES, current=True)
+        gross_profit_prev = get_amount(is_df, GROSS_PROFIT_NAMES, current=False)
+        cfo_t = get_amount(cf, CFO_NAMES, current=True)
+    else:
+        # 분기/반기 보고서 -> TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
+        df_annual = None
+        for yr_try in (current_year - 1, current_year - 2):
+            df_annual = _fetch_report(dart, ticker, yr_try, "11011")
+            if df_annual is not None:
+                break
+        if df_annual is None:
+            return None  # TTM 계산에 필요한 직전 사업보고서를 찾을 수 없음
+
+        is_annual = df_annual[df_annual["sj_div"].isin(["IS", "CIS"])]
+        cf_annual = df_annual[df_annual["sj_div"] == "CF"]
+
+        def ttm_value(names, cur_section, annual_section):
+            """TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적."""
+            fy_prior = get_amount(annual_section, names, current=True)
+            ytd_prior_same_period = get_amount(cur_section, names, current=False)
+            ytd_current = get_amount(cur_section, names, current=True)
+            return fy_prior - ytd_prior_same_period + ytd_current
+
+        revenue_t = ttm_value(REVENUE_NAMES, is_df, is_annual)
+        op_income_t = ttm_value(OP_INCOME_NAMES, is_df, is_annual)
+        net_income_t = ttm_value(NET_INCOME_NAMES, is_df, is_annual)
+        gross_profit_t = ttm_value(GROSS_PROFIT_NAMES, is_df, is_annual)
+        cfo_t = ttm_value(CFO_NAMES, cf, cf_annual)
+
+        # F-Score의 "전기" 비교 기준: 직전 사업연도 전체 (한 해 전 TTM에 대한 근사)
+        revenue_prev = get_amount(is_annual, REVENUE_NAMES, current=True)
+        net_income_prev = get_amount(is_annual, NET_INCOME_NAMES, current=True)
+        gross_profit_prev = get_amount(is_annual, GROSS_PROFIT_NAMES, current=True)
+
     if gross_profit_t == 0.0:
         gross_profit_t, gross_profit_prev = op_income_t, op_income_t
 
-    cfo_t = get_account_value(cf, ["영업활동현금흐름", "영업활동으로인한현금흐름"], col_t)
-
-    # 1. 수익성 조건 체크 (OPM, ROA, ROE, PBR)
+    # 1. 수익성 조건 체크 (OPM, ROA, ROE, PBR) - 전부 TTM/최신 시점 기준
     opm = (op_income_t / revenue_t * 100) if revenue_t > 0 else 0
     roa = (net_income_t / total_assets_t * 100) if total_assets_t > 0 else 0
     roe = (net_income_t / total_equity_t * 100) if total_equity_t > 0 else 0
@@ -224,8 +346,6 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, re
     scores += 1 if cr_t > cr_prev else 0
 
     # 자본금 변동 기준 주식수 비희석 체크
-    cap_t = get_account_value(bs, ["자본금"], col_t)
-    cap_prev = get_account_value(bs, ["자본금"], col_prev)
     scores += 1 if cap_t <= cap_prev else 0
 
     # 영업효율성 (2점)
@@ -242,7 +362,8 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, re
         "ROA(%)": round(roa, 2),
         "ROE(%)": round(roe, 2),
         "PBR": round(pbr, 2),
-        "F_Score": scores
+        "F_Score": scores,
+        "기준보고서": f"{current_year}/{current_code}",
     }
     if require_per:
         result["PER"] = round(per, 2)
@@ -252,19 +373,26 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, re
 # ==========================================
 # 3단계: 통합 실행
 # ==========================================
-def run_pipeline(dart_api_key, target_year, criteria, log=print, progress_cb=None):
-    """전체 스크리닝 파이프라인을 실행하고 최종 결과 DataFrame을 반환한다."""
+def run_pipeline(dart_api_key, criteria, as_of=None, log=print, progress_cb=None):
+    """
+    전체 스크리닝 파이프라인을 실행하고 최종 결과 DataFrame을 반환한다.
+    as_of를 지정하지 않으면 오늘 시점 기준으로 가장 최근 공시된 사업/반기/분기보고서를
+    찾아 TTM(최근 12개월) 재무데이터로 평가한다.
+    """
+    if as_of is None:
+        as_of = pd.Timestamp.today()
+
     dart = create_dart_client(dart_api_key, log=log)
     df_candidates = run_first_stage_screening(criteria, log=log, progress_cb=progress_cb)
 
     results = []
-    log(f"\n▶ [2단계] 1차 통과 {len(df_candidates)}개 종목 수익성 필터 및 F-Score 검증 시작...")
+    log(f"\n▶ [2단계] 1차 통과 {len(df_candidates)}개 종목 수익성 필터 및 F-Score 검증 시작... (TTM 기준일: {pd.Timestamp(as_of).date()})")
 
     total = len(df_candidates)
     for i, ticker in enumerate(tqdm(df_candidates.index)):
         name = df_candidates.loc[ticker, "종목명"]
         marcap = df_candidates.loc[ticker, "시가총액"]
-        metrics = evaluate_financials_and_fscore(dart, ticker, target_year, marcap, criteria)
+        metrics = evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria)
 
         if metrics is not None:
             marcap_eok = round(marcap / 100_000_000)
@@ -282,7 +410,8 @@ def run_pipeline(dart_api_key, target_year, criteria, log=print, progress_cb=Non
                 "영업이익률(%)": metrics["OPM(%)"],
                 "ROA(%)": metrics["ROA(%)"],
                 "ROE(%)": metrics["ROE(%)"],
-                "F-Score": metrics["F_Score"]
+                "F-Score": metrics["F_Score"],
+                "기준보고서": metrics["기준보고서"],
             })
         if progress_cb:
             progress_cb("fscore", i + 1, total)

@@ -128,7 +128,7 @@ def run_backtest(dart_api_key, criteria, start_year, end_year, universe_size=500
         selected = []
         for ci, (ticker, marcap) in enumerate(candidates):
             metrics = evaluate_financials_and_fscore(
-                dart, ticker, report_year, marcap, criteria, require_per=True
+                dart, ticker, rb_date, marcap, criteria, require_per=True
             )
             if metrics is not None and metrics["F_Score"] >= criteria["MIN_FSCORE"]:
                 entry_row = _row_on_or_before(price_hist[ticker], rb_date)

@@ -1,21 +1,17 @@
 import streamlit as st
 
-from screener import DEFAULT_FILTER_CRITERIA, DEFAULT_TARGET_YEAR, run_pipeline
+from screener import DEFAULT_FILTER_CRITERIA, run_pipeline
 from ui_common import get_dart_api_key
 
 st.title("📈 수익가치주 찾기")
 st.caption("시가총액 · PER · PBR · 수익성(OPM/ROA/ROE) · Piotroski F-Score 기반 2단계 필터링")
+st.caption("재무 데이터는 오늘 시점 기준 최근 12개월(TTM) 실적으로 계산합니다 — 가장 최근 공시된 사업/반기/분기보고서를 자동으로 찾아 사용합니다.")
 
 
 with st.sidebar:
     st.header("⚙️ 스크리닝 조건")
 
     dart_api_key = get_dart_api_key()
-
-    target_year = st.number_input(
-        "결산 사업보고서 연도", min_value=2015, max_value=2100,
-        value=DEFAULT_TARGET_YEAR, step=1,
-    )
 
     min_marcap_eok = st.number_input(
         "최소 시가총액 (억원)", min_value=0,
@@ -75,7 +71,7 @@ if run_clicked:
 
     with st.spinner("스크리닝 실행 중... (전종목 스캔 + 재무제표 분석, 수 분 소요될 수 있습니다)"):
         df_final = run_pipeline(
-            dart_api_key, int(target_year), criteria, log=log, progress_cb=progress_cb
+            dart_api_key, criteria, log=log, progress_cb=progress_cb
         )
 
     progress_bar.empty()

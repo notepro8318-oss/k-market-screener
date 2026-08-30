@@ -1,7 +1,7 @@
 import os
 import sys
 
-from screener import DEFAULT_FILTER_CRITERIA, DEFAULT_TARGET_YEAR, run_pipeline
+from screener import DEFAULT_FILTER_CRITERIA, run_pipeline
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -14,7 +14,7 @@ def main():
         print("https://opendart.fss.or.kr 에서 발급받은 키를 환경 변수로 설정한 뒤 다시 실행하세요.")
         return
 
-    df_final = run_pipeline(DART_API_KEY, DEFAULT_TARGET_YEAR, DEFAULT_FILTER_CRITERIA)
+    df_final = run_pipeline(DART_API_KEY, DEFAULT_FILTER_CRITERIA)
 
     if not df_final.empty:
         print("\n" + "=" * 80)
