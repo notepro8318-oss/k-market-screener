@@ -1,17 +1,28 @@
 import streamlit as st
 
-from screener import DEFAULT_FILTER_CRITERIA, run_pipeline
-from ui_common import get_dart_api_key
+from screener import DEFAULT_FILTER_CRITERIA, load_cache_meta, run_pipeline_from_cache
 
 st.title("📈 수익가치주 찾기")
 st.caption("시가총액 · PER · PBR · 수익성(OPM/ROA/ROE) · Piotroski F-Score 기반 2단계 필터링")
-st.caption("재무 데이터는 오늘 시점 기준 최근 12개월(TTM) 실적으로 계산합니다 — 가장 최근 공시된 사업/반기/분기보고서를 자동으로 찾아 사용합니다.")
+
+cache_meta = load_cache_meta()
+if cache_meta is None:
+    st.error(
+        "캐시 데이터가 아직 없습니다. OpenDART가 이 서버(해외 IP)에서의 연결을 차단해 "
+        "실시간 조회가 불가능하므로, 로컬 환경에서 `python batch.py`를 실행해 "
+        "`data/screening_cache.csv`를 만든 뒤 커밋/푸시해야 합니다."
+    )
+    st.stop()
+
+st.caption(
+    f"데이터 기준일: {cache_meta['generated_at']} (종목 {cache_meta['count']}개) — "
+    "재무 데이터는 그 시점 기준 최근 12개월(TTM) 실적입니다. "
+    "OpenDART가 해외 IP를 차단해 실시간 조회 대신 로컬에서 주기적으로 갱신한 캐시를 사용합니다."
+)
 
 
 with st.sidebar:
     st.header("⚙️ 스크리닝 조건")
-
-    dart_api_key = get_dart_api_key()
 
     min_marcap_eok = st.number_input(
         "최소 시가총액 (억원)", min_value=0,
@@ -54,28 +65,7 @@ with st.sidebar:
     run_clicked = st.button("🔍 스크리닝 실행", type="primary", use_container_width=True)
 
 if run_clicked:
-    if not dart_api_key:
-        st.error("OpenDART API Key를 입력해주세요.")
-        st.stop()
-
-    status_box = st.empty()
-    progress_bar = st.progress(0.0)
-
-    def log(msg):
-        text = str(msg).strip()
-        if text:
-            status_box.info(text)
-
-    def progress_cb(stage, done, total):
-        progress_bar.progress(done / total if total else 0.0)
-
-    with st.spinner("스크리닝 실행 중... (전종목 스캔 + 재무제표 분석, 수 분 소요될 수 있습니다)"):
-        df_final = run_pipeline(
-            dart_api_key, criteria, log=log, progress_cb=progress_cb
-        )
-
-    progress_bar.empty()
-    status_box.empty()
+    df_final = run_pipeline_from_cache(criteria)
 
     if df_final.empty:
         st.warning("조건을 모두 만족하는 종목이 없습니다. 조건을 완화한 뒤 다시 시도해보세요.")
@@ -90,4 +80,4 @@ if run_clicked:
             mime="text/csv",
         )
 else:
-    st.info("왼쪽에서 조건을 설정한 뒤 **스크리닝 실행** 버튼을 눌러주세요. 전체 스크리닝은 수 분 정도 소요됩니다.")
+    st.info("왼쪽에서 조건을 설정한 뒤 **스크리닝 실행** 버튼을 눌러주세요.")

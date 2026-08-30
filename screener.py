@@ -1,12 +1,27 @@
+import json
 import re
 import time
 from io import StringIO
+from pathlib import Path
 
 import pandas as pd
 import requests
 import FinanceDataReader as fdr
 from opendartreader import OpenDartReader
 from tqdm import tqdm
+
+DATA_DIR = Path(__file__).parent / "data"
+CACHE_CSV = DATA_DIR / "screening_cache.csv"
+CACHE_META = DATA_DIR / "screening_cache_meta.json"
+
+# batch.py가 로컬(한국 IP)에서 캐시를 만들 때 쓰는 느슨한 1차 필터.
+# Streamlit Cloud UI에서는 이 floor보다 느슨한 조건을 걸어도 캐시에 없는 종목은
+# 결과에 나타나지 않는다 (batch.py 실행 시점에 이미 걸러졌으므로).
+BROAD_CACHE_CRITERIA = {
+    "MIN_MARCAP": 30_000_000_000,          # 300억
+    "MAX_PER": 9999.0,
+    "MIN_TRADING_VALUE_20D": 100_000_000,  # 1억
+}
 
 # opendartreader(및 그 하위 모듈)는 모든 HTTP 호출에 timeout을 전혀 지정하지 않는다.
 # 서버가 응답을 늦게 주거나 아예 응답이 없는 경우(연결 자체가 거부되는 것과 달리) 예외가
@@ -236,10 +251,12 @@ def _fetch_report(dart, ticker, bsns_year, reprt_code):
         return None
 
 
-def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, require_per=False, max_report_attempts=4):
+def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4):
     """
     as_of 시점까지 공시된 가장 최근 보고서(사업/반기/분기)를 찾아 TTM(최근 12개월 합산)
-    기준으로 매출·영업이익·순이익·매출총이익·영업활동현금흐름을 계산한다.
+    기준으로 매출·영업이익·순이익·매출총이익·영업활동현금흐름을 계산하고, OPM/ROA/ROE/PBR/PER/
+    Piotroski F-Score를 산출한다. 조건(criteria) 필터링은 하지 않고 계산된 값을 그대로 반환한다
+    (배치 캐시처럼 나중에 임의 조건으로 다시 걸러낼 원본 지표가 필요한 경우에 사용).
 
     TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
     (분기/반기 보고서는 DART가 전년동기누적(frmtrm_add_amount)을 함께 내려주므로 추가 조회 없이
@@ -249,10 +266,6 @@ def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, requir
     재무상태표(BS) 항목은 시점값이므로 항상 가장 최근 보고서의 당기말 값을 사용하고,
     F-Score의 전년 대비 비교는 재무상태표는 직전 사업연도말(전기), 손익 항목은 직전
     사업연도 전체(당기 대비 한 해 전 값)를 기준으로 한다.
-
-    require_per=True이면 PER도 (marcap / TTM 당기순이익)으로 직접 계산해 MAX_PER 조건까지
-    검증하고 결과에 포함한다. 백테스트처럼 특정 과거 시점의 실시간 PER 스냅샷을 구할 수
-    없는 경우에 사용한다 (실시간 스크리닝은 1단계에서 Naver PER을 이미 적용했으므로 기본값 False).
     """
     candidates = _report_candidates(as_of)[:max_report_attempts]
 
@@ -327,23 +340,14 @@ def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, requir
     if gross_profit_t == 0.0:
         gross_profit_t, gross_profit_prev = op_income_t, op_income_t
 
-    # 1. 수익성 조건 체크 (OPM, ROA, ROE, PBR) - 전부 TTM/최신 시점 기준
+    # OPM/ROA/ROE/PBR/PER - 전부 TTM/최신 시점 기준
     opm = (op_income_t / revenue_t * 100) if revenue_t > 0 else 0
     roa = (net_income_t / total_assets_t * 100) if total_assets_t > 0 else 0
     roe = (net_income_t / total_equity_t * 100) if total_equity_t > 0 else 0
     pbr = (marcap / total_equity_t) if total_equity_t > 0 else 0
     per = (marcap / net_income_t) if net_income_t > 0 else 0
 
-    fail = (opm < criteria["MIN_OPM"] or
-            roa < criteria["MIN_ROA"] or
-            roe < criteria["MIN_ROE"] or
-            not (0 < pbr <= criteria["MAX_PBR"]))
-    if require_per:
-        fail = fail or not (0 < per <= criteria["MAX_PER"])
-    if fail:
-        return None  # 조건 미달성 시 탈락
-
-    # 2. 피오트로스키 F-Score (9개 항목) 계산
+    # 피오트로스키 F-Score (9개 항목) 계산
     scores = 0
     # 수익성 (4점)
     scores += 1 if roa > 0 else 0
@@ -373,16 +377,43 @@ def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, requir
     turn_prev = (revenue_prev / total_assets_prev) if total_assets_prev > 0 else 0
     scores += 1 if turn_t > turn_prev else 0
 
-    result = {
+    return {
         "OPM(%)": round(opm, 2),
         "ROA(%)": round(roa, 2),
         "ROE(%)": round(roe, 2),
         "PBR": round(pbr, 2),
+        "PER": round(per, 2),
         "F_Score": scores,
         "기준보고서": f"{current_year}/{current_code}",
     }
+
+
+def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, require_per=False, max_report_attempts=4):
+    """
+    compute_raw_metrics()로 계산한 원본 지표에 criteria(OPM/ROA/ROE/PBR 최소·최대 조건)를
+    적용해 통과 종목만 반환한다 (조건 미달성 시 None).
+
+    require_per=True이면 PER도 (marcap / TTM 당기순이익)으로 직접 계산한 값을 MAX_PER 조건까지
+    검증하고 결과에 포함한다. 백테스트처럼 특정 과거 시점의 실시간 PER 스냅샷을 구할 수 없는
+    경우에 사용한다 (실시간 스크리닝은 1단계에서 Naver PER을 이미 적용했으므로 기본값 False이고,
+    이 경우 PER은 결과에 포함되지 않는다 - 호출자가 Naver PER을 별도로 붙인다).
+    """
+    metrics = compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts)
+    if metrics is None:
+        return None
+
+    fail = (metrics["OPM(%)"] < criteria["MIN_OPM"] or
+            metrics["ROA(%)"] < criteria["MIN_ROA"] or
+            metrics["ROE(%)"] < criteria["MIN_ROE"] or
+            not (0 < metrics["PBR"] <= criteria["MAX_PBR"]))
     if require_per:
-        result["PER"] = round(per, 2)
+        fail = fail or not (0 < metrics["PER"] <= criteria["MAX_PER"])
+    if fail:
+        return None
+
+    result = dict(metrics)
+    if not require_per:
+        del result["PER"]
     return result
 
 
@@ -441,3 +472,51 @@ def run_pipeline(dart_api_key, criteria, as_of=None, log=print, progress_cb=None
         )
 
     return df_final
+
+
+# ==========================================
+# 4단계: 배치 캐시 조회 (OpenDART가 해외 IP를 차단해 Streamlit Cloud에서 run_pipeline()이
+# 항상 ConnectTimeout으로 실패하므로, DART 의존 데이터 수집은 로컬(한국 IP)에서 batch.py로
+# 미리 실행해 data/screening_cache.csv에 저장해두고 배포된 앱은 그 캐시만 읽는다)
+# ==========================================
+def load_cache_meta():
+    if CACHE_META.exists():
+        return json.loads(CACHE_META.read_text(encoding="utf-8"))
+    return None
+
+
+def run_pipeline_from_cache(criteria):
+    """
+    batch.py가 로컬에서 미리 만들어둔 data/screening_cache.csv에서 조건에 맞는 종목만 걸러낸다.
+    외부 네트워크 호출이 전혀 없으므로 OpenDART가 막혀 있는 환경에서도 즉시 동작한다.
+
+    캐시는 BROAD_CACHE_CRITERIA로 넓게 잡은 후보군만 담고 있으므로, 여기서 그보다 느슨한
+    조건(예: 최소 시가총액을 300억보다 낮게)을 걸어도 캐시에 없는 종목은 결과에 나타나지 않는다.
+    """
+    if not CACHE_CSV.exists():
+        raise FileNotFoundError(
+            "캐시 파일이 없습니다. 로컬 환경에서 `python batch.py`를 실행해 "
+            "data/screening_cache.csv를 만든 뒤 커밋/푸시하세요."
+        )
+    df = pd.read_csv(CACHE_CSV, dtype={"종목코드": str})
+
+    cond = (
+        (df["시가총액"] >= criteria["MIN_MARCAP"])
+        & (df["PER"] > 0) & (df["PER"] <= criteria["MAX_PER"])
+        & (df["20D_Avg_Trading_Val"] >= criteria["MIN_TRADING_VALUE_20D"])
+        & (df["OPM(%)"] >= criteria["MIN_OPM"])
+        & (df["ROA(%)"] >= criteria["MIN_ROA"])
+        & (df["ROE(%)"] >= criteria["MIN_ROE"])
+        & (df["PBR"] > 0) & (df["PBR"] <= criteria["MAX_PBR"])
+        & (df["F_Score"] >= criteria["MIN_FSCORE"])
+    )
+    df_pass = df[cond].copy()
+    df_pass["시가총액(억)"] = (df_pass["시가총액"] / 100_000_000).round().astype(int)
+    df_pass["20일거래대금(억)"] = (df_pass["20D_Avg_Trading_Val"] / 100_000_000).round(1)
+
+    df_final = df_pass.rename(columns={"OPM(%)": "영업이익률(%)", "F_Score": "F-Score"})[[
+        "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)", "PER", "PBR",
+        "영업이익률(%)", "ROA(%)", "ROE(%)", "F-Score", "기준보고서",
+    ]]
+
+    return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
