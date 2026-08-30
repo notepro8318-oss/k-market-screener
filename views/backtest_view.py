@@ -6,8 +6,6 @@ from backtest import run_backtest
 from screener import DEFAULT_FILTER_CRITERIA
 from ui_common import get_dart_api_key
 
-st.set_page_config(page_title="K-Market Backtest", page_icon="🧪", layout="wide")
-
 st.title("🧪 조건별 백테스트")
 st.caption("매년 4/1(전년도 사업보고서 공시 마감 직후) 리밸런싱하는 과거 시뮬레이션")
 
