@@ -1,25 +1,12 @@
 import streamlit as st
 
 from screener import DEFAULT_FILTER_CRITERIA, DEFAULT_TARGET_YEAR, run_pipeline
+from ui_common import get_dart_api_key
 
 st.set_page_config(page_title="K-Market Value Screener", page_icon="📈", layout="wide")
 
 st.title("📈 한국 저평가 우량주 스크리너")
 st.caption("시가총액 · PER · PBR · 수익성(OPM/ROA/ROE) · Piotroski F-Score 기반 2단계 필터링")
-
-
-def get_dart_api_key():
-    try:
-        key = st.secrets.get("DART_API_KEY", "")
-    except Exception:
-        key = ""
-    if not key:
-        key = st.sidebar.text_input(
-            "OpenDART API Key",
-            type="password",
-            help="https://opendart.fss.or.kr 에서 무료로 발급받을 수 있습니다.",
-        )
-    return key
 
 
 with st.sidebar:

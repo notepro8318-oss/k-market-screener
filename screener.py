@@ -126,7 +126,12 @@ def get_account_value(df, account_names, col_name):
     return 0.0
 
 
-def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria):
+def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria, require_per=False):
+    """
+    require_per=True이면 PER도 (marcap / 당기순이익)으로 직접 계산해 MAX_PER 조건까지
+    검증하고 결과에 포함한다. 백테스트처럼 특정 과거 시점의 실시간 PER 스냅샷을 구할 수
+    없는 경우에 사용한다 (실시간 스크리닝은 1단계에서 Naver PER을 이미 적용했으므로 기본값 False).
+    """
     try:
         # 연결재무제표(CFS) 우선, 미존재 시 개별(OFS)
         df_fs = dart.finstate_all(ticker, bsns_year, reprt_code="11011", fs_div="CFS")
@@ -172,11 +177,15 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria):
     roa = (net_income_t / total_assets_t * 100) if total_assets_t > 0 else 0
     roe = (net_income_t / total_equity_t * 100) if total_equity_t > 0 else 0
     pbr = (marcap / total_equity_t) if total_equity_t > 0 else 0
+    per = (marcap / net_income_t) if net_income_t > 0 else 0
 
-    if (opm < criteria["MIN_OPM"] or
-        roa < criteria["MIN_ROA"] or
-        roe < criteria["MIN_ROE"] or
-        not (0 < pbr <= criteria["MAX_PBR"])):
+    fail = (opm < criteria["MIN_OPM"] or
+            roa < criteria["MIN_ROA"] or
+            roe < criteria["MIN_ROE"] or
+            not (0 < pbr <= criteria["MAX_PBR"]))
+    if require_per:
+        fail = fail or not (0 < per <= criteria["MAX_PER"])
+    if fail:
         return None  # 조건 미달성 시 탈락
 
     # 2. 피오트로스키 F-Score (9개 항목) 계산
@@ -211,13 +220,16 @@ def evaluate_financials_and_fscore(dart, ticker, bsns_year, marcap, criteria):
     turn_prev = (revenue_prev / total_assets_prev) if total_assets_prev > 0 else 0
     scores += 1 if turn_t > turn_prev else 0
 
-    return {
+    result = {
         "OPM(%)": round(opm, 2),
         "ROA(%)": round(roa, 2),
         "ROE(%)": round(roe, 2),
         "PBR": round(pbr, 2),
         "F_Score": scores
     }
+    if require_per:
+        result["PER"] = round(per, 2)
+    return result
 
 
 # ==========================================
