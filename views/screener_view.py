@@ -71,8 +71,22 @@ if run_clicked:
         st.warning("조건을 모두 만족하는 종목이 없습니다. 조건을 완화한 뒤 다시 시도해보세요.")
     else:
         st.success(f"{len(df_final)}개 종목이 조건을 통과했습니다.")
-        st.dataframe(df_final, use_container_width=True, hide_index=True)
-        csv_bytes = df_final.to_csv(index=False).encode("utf-8-sig")
+        st.caption("추세 컬럼은 과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 흐름입니다.")
+        st.dataframe(
+            df_final,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "PER_trend": st.column_config.LineChartColumn("PER 추세", width="small"),
+                "PBR_trend": st.column_config.LineChartColumn("PBR 추세", width="small"),
+                "OPM_trend": st.column_config.LineChartColumn("영업이익률 추세", width="small"),
+                "ROA_trend": st.column_config.LineChartColumn("ROA 추세", width="small"),
+                "ROE_trend": st.column_config.LineChartColumn("ROE 추세", width="small"),
+            },
+        )
+        csv_bytes = df_final.drop(
+            columns=["PER_trend", "PBR_trend", "OPM_trend", "ROA_trend", "ROE_trend"]
+        ).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "📥 CSV 다운로드",
             data=csv_bytes,

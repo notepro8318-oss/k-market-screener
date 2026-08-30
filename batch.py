@@ -13,6 +13,10 @@ data/screening_cache.csv에 저장해두고, Streamlit 앱(views/screener_view.p
 
 DART 재무제표는 분기 단위로만 갱신되므로 매일 돌릴 필요는 없고, 새 분기/반기/사업보고서가
 공시된 후 한 번씩(또는 주 1회) 실행해 data/ 아래 결과를 커밋·푸시하면 된다.
+
+코스피·코스닥 상장 전 종목(PER 계산이 가능한, 즉 흑자인 종목)을 대상으로 하며, 종목당
+OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)도 함께 수집한다 - 그만큼
+DART/가격 조회가 늘어나 종목 수 기준 실행 시간이 길어진다 (수천 종목 기준 1시간 이상 소요 가능).
 """
 
 import datetime
@@ -53,7 +57,7 @@ def run_batch(dart_api_key, log=print):
         per = df_candidates.loc[ticker, "PER"]  # Naver PER (1차 필터에서 이미 수집됨)
         avg_trd = df_candidates.loc[ticker, "20D_Avg_Trading_Val"]
 
-        metrics = compute_raw_metrics(dart, ticker, as_of, marcap)
+        metrics = compute_raw_metrics(dart, ticker, as_of, marcap, include_trend=True)
         if metrics is not None:
             rows.append({
                 "종목코드": ticker,
@@ -67,8 +71,13 @@ def run_batch(dart_api_key, log=print):
                 "PBR": metrics["PBR"],
                 "F_Score": metrics["F_Score"],
                 "기준보고서": metrics["기준보고서"],
+                "OPM_trend": json.dumps(metrics["OPM_trend"]),
+                "ROA_trend": json.dumps(metrics["ROA_trend"]),
+                "ROE_trend": json.dumps(metrics["ROE_trend"]),
+                "PBR_trend": json.dumps(metrics["PBR_trend"]),
+                "PER_trend": json.dumps(metrics["PER_trend"]),
             })
-        if (i + 1) % 20 == 0 or (i + 1) == total:
+        if (i + 1) % 10 == 0 or (i + 1) == total:
             log(f"  진행: {i + 1}/{total}")
         time.sleep(0.3)  # DART API 안정 호출 딜레이
 

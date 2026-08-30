@@ -14,13 +14,16 @@ DATA_DIR = Path(__file__).parent / "data"
 CACHE_CSV = DATA_DIR / "screening_cache.csv"
 CACHE_META = DATA_DIR / "screening_cache_meta.json"
 
-# batch.py가 로컬(한국 IP)에서 캐시를 만들 때 쓰는 느슨한 1차 필터.
+# batch.py가 로컬(한국 IP)에서 캐시를 만들 때 쓰는 1차 필터.
+# 코스피·코스닥 전 종목을 대상으로 하기 위해 시가총액/거래대금 하한을 두지 않는다.
+# PER > 0 조건은 run_first_stage_screening의 Naver 데이터 자체의 구조상 항상 적용되며,
+# 적자 기업(PER 계산 불가)은 이 스크리너의 성격상 애초에 대상이 아니다.
 # Streamlit Cloud UI에서는 이 floor보다 느슨한 조건을 걸어도 캐시에 없는 종목은
 # 결과에 나타나지 않는다 (batch.py 실행 시점에 이미 걸러졌으므로).
 BROAD_CACHE_CRITERIA = {
-    "MIN_MARCAP": 30_000_000_000,          # 300억
+    "MIN_MARCAP": 0,
     "MAX_PER": 9999.0,
-    "MIN_TRADING_VALUE_20D": 100_000_000,  # 1억
+    "MIN_TRADING_VALUE_20D": 0,
 }
 
 # opendartreader(및 그 하위 모듈)는 모든 HTTP 호출에 timeout을 전혀 지정하지 않는다.
@@ -251,12 +254,66 @@ def _fetch_report(dart, ticker, bsns_year, reprt_code):
         return None
 
 
-def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4):
+_PERIOD_END = {"11011": (12, 31), "11012": (6, 30), "11013": (3, 31), "11014": (9, 30)}
+
+
+def _report_reference_date(df, year, code):
+    """공시 접수일(rcept_no 앞 8자리, YYYYMMDD)을 YYYY-MM-DD로 반환. 없으면 결산기준일로 대체."""
+    try:
+        rcept = str(df.iloc[0]["rcept_no"])
+        if len(rcept) >= 8 and rcept[:8].isdigit():
+            d = rcept[:8]
+            return f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+    except Exception:
+        pass
+    m, d = _PERIOD_END.get(code, (12, 31))
+    return f"{year}-{m:02d}-{d:02d}"
+
+
+def _annual_year_metrics(df):
+    """사업보고서 하나에서 당기(thstrm)·전기(frmtrm) 두 사업연도의 원본 재무값을 추출."""
+    bs = df[df["sj_div"] == "BS"]
+    is_df = df[df["sj_div"].isin(["IS", "CIS"])]
+
+    def pair(names, section):
+        return get_amount(section, names, current=True), get_amount(section, names, current=False)
+
+    revenue_t, revenue_p = pair(REVENUE_NAMES, is_df)
+    op_income_t, op_income_p = pair(OP_INCOME_NAMES, is_df)
+    net_income_t, net_income_p = pair(NET_INCOME_NAMES, is_df)
+    total_assets_t, total_assets_p = pair(["자산총계"], bs)
+    total_equity_t, total_equity_p = pair(["자본총계"], bs)
+
+    cur = {"revenue": revenue_t, "op_income": op_income_t, "net_income": net_income_t,
+           "total_assets": total_assets_t, "total_equity": total_equity_t}
+    prev = {"revenue": revenue_p, "op_income": op_income_p, "net_income": net_income_p,
+            "total_assets": total_assets_p, "total_equity": total_equity_p}
+    return cur, prev
+
+
+def _ratios_from(vals, marcap):
+    """_annual_year_metrics()가 반환한 원본값 딕셔너리 + 그 시점 시가총액으로 비율 계산. 계산 불가하면 None."""
+    revenue, op_income, net_income = vals["revenue"], vals["op_income"], vals["net_income"]
+    total_assets, total_equity = vals["total_assets"], vals["total_equity"]
+    opm = (op_income / revenue * 100) if revenue > 0 else None
+    roa = (net_income / total_assets * 100) if total_assets > 0 else None
+    roe = (net_income / total_equity * 100) if total_equity > 0 else None
+    pbr = (marcap / total_equity) if (marcap and total_equity > 0) else None
+    per = (marcap / net_income) if (marcap and net_income and net_income > 0) else None
+    return {"OPM": opm, "ROA": roa, "ROE": roe, "PBR": pbr, "PER": per}
+
+
+def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, include_trend=False):
     """
     as_of 시점까지 공시된 가장 최근 보고서(사업/반기/분기)를 찾아 TTM(최근 12개월 합산)
     기준으로 매출·영업이익·순이익·매출총이익·영업활동현금흐름을 계산하고, OPM/ROA/ROE/PBR/PER/
     Piotroski F-Score를 산출한다. 조건(criteria) 필터링은 하지 않고 계산된 값을 그대로 반환한다
     (배치 캐시처럼 나중에 임의 조건으로 다시 걸러낼 원본 지표가 필요한 경우에 사용).
+
+    include_trend=True이면 과거 최대 3개 사업연도 + 현재 TTM의 OPM/ROA/ROE/PBR/PER을
+    *_trend 리스트로 함께 반환한다 (스파크라인용). DART 조회 1회, FinanceDataReader 조회 1회가
+    추가로 필요해 호출 비용이 늘어나므로, 이 값이 실제로 쓰이는 배치 캐시 생성(batch.py)에서만
+    켠다 - 백테스트/CLI 등 다른 호출자는 기본값(False)을 그대로 쓴다.
 
     TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
     (분기/반기 보고서는 DART가 전년동기누적(frmtrm_add_amount)을 함께 내려주므로 추가 조회 없이
@@ -267,6 +324,7 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4):
     F-Score의 전년 대비 비교는 재무상태표는 직전 사업연도말(전기), 손익 항목은 직전
     사업연도 전체(당기 대비 한 해 전 값)를 기준으로 한다.
     """
+    marcap = float(marcap)  # pandas/numpy 스칼라가 넘어와도 JSON 직렬화 가능한 순수 float로 통일
     candidates = _report_candidates(as_of)[:max_report_attempts]
 
     df_current = None
@@ -377,15 +435,70 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4):
     turn_prev = (revenue_prev / total_assets_prev) if total_assets_prev > 0 else 0
     scores += 1 if turn_t > turn_prev else 0
 
-    return {
+    result = {
         "OPM(%)": round(opm, 2),
         "ROA(%)": round(roa, 2),
         "ROE(%)": round(roe, 2),
         "PBR": round(pbr, 2),
         "PER": round(per, 2),
         "F_Score": scores,
-        "기준보고서": f"{current_year}/{current_code}",
+        "기준보고서": _report_reference_date(df_current, current_year, current_code),
     }
+
+    if include_trend:
+        # 과거 최대 3개 사업연도 + 현재 TTM
+        try:
+            price_hist = fdr.DataReader(ticker, pd.Timestamp(as_of) - pd.DateOffset(years=5), pd.Timestamp(as_of))
+        except Exception:
+            price_hist = None
+        latest_close = price_hist.iloc[-1]["Close"] if price_hist is not None and not price_hist.empty else None
+
+        def marcap_at_year_end(year):
+            if price_hist is None or price_hist.empty or not latest_close:
+                return None
+            row = price_hist[price_hist.index <= pd.Timestamp(year, 12, 31)]
+            if row.empty:
+                return None
+            return row.iloc[-1]["Close"] * (marcap / latest_close)
+
+        year_metrics = {}
+        if current_code == "11011":
+            cur_y, prev_y = _annual_year_metrics(df_current)
+            year_metrics[current_year - 1] = prev_y
+            probe_year = current_year - 2
+        else:
+            annual_cur, annual_prev = _annual_year_metrics(df_annual)
+            year_metrics[current_year - 2] = annual_prev
+            year_metrics[current_year - 1] = annual_cur
+            probe_year = current_year - 3
+
+        df_older = _fetch_report(dart, ticker, probe_year, "11011")
+        if df_older is None:
+            df_older = _fetch_report(dart, ticker, probe_year - 1, "11011")
+        if df_older is not None:
+            older_cur, older_prev = _annual_year_metrics(df_older)
+            year_metrics[probe_year] = older_cur
+            year_metrics[probe_year - 1] = older_prev
+
+        trend = {"OPM": [], "ROA": [], "ROE": [], "PBR": [], "PER": []}
+        for yr in sorted(year_metrics.keys())[-3:]:
+            r = _ratios_from(year_metrics[yr], marcap_at_year_end(yr))
+            for key in trend:
+                if r[key] is not None:
+                    trend[key].append(round(float(r[key]), 2))
+        trend["OPM"].append(round(opm, 2))
+        trend["ROA"].append(round(roa, 2))
+        trend["ROE"].append(round(roe, 2))
+        trend["PBR"].append(round(pbr, 2))
+        trend["PER"].append(round(per, 2))
+
+        result["OPM_trend"] = trend["OPM"]
+        result["ROA_trend"] = trend["ROA"]
+        result["ROE_trend"] = trend["ROE"]
+        result["PBR_trend"] = trend["PBR"]
+        result["PER_trend"] = trend["PER"]
+
+    return result
 
 
 def evaluate_financials_and_fscore(dart, ticker, as_of, marcap, criteria, require_per=False, max_report_attempts=4):
@@ -500,6 +613,12 @@ def run_pipeline_from_cache(criteria):
         )
     df = pd.read_csv(CACHE_CSV, dtype={"종목코드": str})
 
+    trend_cols = ["OPM_trend", "ROA_trend", "ROE_trend", "PBR_trend", "PER_trend"]
+    for col in trend_cols:
+        if col not in df.columns:
+            df[col] = "[]"  # 구버전 캐시(트렌드 미포함) 호환
+        df[col] = df[col].fillna("[]").apply(json.loads)
+
     cond = (
         (df["시가총액"] >= criteria["MIN_MARCAP"])
         & (df["PER"] > 0) & (df["PER"] <= criteria["MAX_PER"])
@@ -515,8 +634,10 @@ def run_pipeline_from_cache(criteria):
     df_pass["20일거래대금(억)"] = (df_pass["20D_Avg_Trading_Val"] / 100_000_000).round(1)
 
     df_final = df_pass.rename(columns={"OPM(%)": "영업이익률(%)", "F_Score": "F-Score"})[[
-        "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)", "PER", "PBR",
-        "영업이익률(%)", "ROA(%)", "ROE(%)", "F-Score", "기준보고서",
+        "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)",
+        "PER", "PER_trend", "PBR", "PBR_trend",
+        "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
+        "F-Score", "기준보고서",
     ]]
 
     return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
