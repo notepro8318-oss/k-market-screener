@@ -8,6 +8,22 @@ import FinanceDataReader as fdr
 from opendartreader import OpenDartReader
 from tqdm import tqdm
 
+# opendartreader(및 그 하위 모듈)는 모든 HTTP 호출에 timeout을 전혀 지정하지 않는다.
+# 서버가 응답을 늦게 주거나 아예 응답이 없는 경우(연결 자체가 거부되는 것과 달리) 예외가
+# 발생하지 않아 재시도 로직조차 발동하지 못한 채 무한정 멈춰버린다. requests.Session.request를
+# 패치해서 호출자가 timeout을 지정하지 않은 모든 요청에 기본 타임아웃을 강제 적용한다
+# (직접 timeout=...을 넘기는 우리 코드의 호출들은 그대로 유지되므로 영향 없음).
+_DEFAULT_HTTP_TIMEOUT = (10, 25)  # (연결, 응답) 초
+_orig_session_request = requests.Session.request
+
+
+def _session_request_with_default_timeout(self, method, url, **kwargs):
+    kwargs.setdefault("timeout", _DEFAULT_HTTP_TIMEOUT)
+    return _orig_session_request(self, method, url, **kwargs)
+
+
+requests.Session.request = _session_request_with_default_timeout
+
 # ==========================================
 # 기본 필터링 조건 (UI/CLI 모두 이 값을 기본값으로 사용)
 # ==========================================
