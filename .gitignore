@@ -12,3 +12,4 @@ venv/
 .claude/
 docs_cache/
 backtest_cache/
+logs/
