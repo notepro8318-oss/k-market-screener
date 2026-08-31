@@ -237,12 +237,30 @@ else:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
+                    "연도": st.column_config.TextColumn(
+                        "연도", help="사업보고서 기준 결산연도",
+                    ),
+                    "매출액(억)": st.column_config.NumberColumn(
+                        "매출액(억)", help="해당 사업연도 매출액 (단위: 억원)",
+                    ),
                     "경상이익(억)": st.column_config.NumberColumn(
                         "경상이익(억)",
-                        help="현행 K-IFRS엔 '경상이익' 계정이 없어 세전이익(법인세비용차감전순이익)으로 대체",
+                        help="현행 K-IFRS엔 '경상이익' 계정이 없어 세전이익(법인세비용차감전순이익)으로 대체 (단위: 억원)",
+                    ),
+                    "경상이익률(%)": st.column_config.NumberColumn(
+                        "경상이익률(%)", help="경상이익(세전이익) ÷ 매출액 × 100",
+                    ),
+                    "영업활동CF(억)": st.column_config.NumberColumn(
+                        "영업활동CF(억)", help="영업활동현금흐름 (단위: 억원). 본업에서 실제로 들어오고 나간 현금",
+                    ),
+                    "투자활동CF(억)": st.column_config.NumberColumn(
+                        "투자활동CF(억)", help="투자활동현금흐름 (단위: 억원). 설비투자·자산 취득/처분 등에 따른 현금 흐름",
+                    ),
+                    "재무활동CF(억)": st.column_config.NumberColumn(
+                        "재무활동CF(억)", help="재무활동현금흐름 (단위: 억원). 차입·상환·배당·증자 등에 따른 현금 흐름",
                     ),
                     "잉여현금흐름(억)": st.column_config.NumberColumn(
-                        "잉여현금흐름(억)", help="FCF ≈ 영업활동현금흐름 + 투자활동현금흐름",
+                        "잉여현금흐름(억)", help="FCF ≈ 영업활동현금흐름 + 투자활동현금흐름 (단위: 억원)",
                     ),
                 },
             )
