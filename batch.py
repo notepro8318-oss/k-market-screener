@@ -53,6 +53,7 @@ def run_batch(dart_api_key, log=print):
 
     for i, ticker in enumerate(df_candidates.index):
         name = df_candidates.loc[ticker, "종목명"]
+        market = df_candidates.loc[ticker, "시장구분"]
         marcap = df_candidates.loc[ticker, "시가총액"]
         per = df_candidates.loc[ticker, "PER"]  # Naver PER (1차 필터에서 이미 수집됨)
         avg_trd = df_candidates.loc[ticker, "20D_Avg_Trading_Val"]
@@ -62,6 +63,7 @@ def run_batch(dart_api_key, log=print):
             rows.append({
                 "종목코드": ticker,
                 "종목명": name,
+                "시장구분": market,
                 "시가총액": marcap,
                 "PER": per,
                 "20D_Avg_Trading_Val": avg_trd,

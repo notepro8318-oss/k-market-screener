@@ -47,6 +47,7 @@ requests.Session.request = _session_request_with_default_timeout
 # 기본 필터링 조건 (UI/CLI 모두 이 값을 기본값으로 사용)
 # ==========================================
 DEFAULT_FILTER_CRITERIA = {
+    "MARKET": "전체",                    # "전체" | "KOSPI" | "KOSDAQ"
     "MIN_MARCAP": 80_000_000_000,        # 시총 800억 이상
     "MAX_PER": 12.0,                     # PER 12배 이하 (0 초과)
     "MAX_PBR": 1.3,                      # PBR 1.3배 이하 (0 초과)
@@ -119,9 +120,13 @@ def run_first_stage_screening(criteria, log=print, progress_cb=None):
     log("▶ [1단계] 전종목 시장 데이터 수집 및 1차 필터링 시작...")
 
     # 1. 전종목 시가총액 수집 (FinanceDataReader, 로그인 불필요)
+    # KOSDAQ GLOBAL은 코스닥의 하위 세그먼트이므로 KOSDAQ으로 합치고, KONEX는 이 스크리너의
+    # 대상(코스피·코스닥)이 아니므로 제외한다.
     df_listing = fdr.StockListing("KRX")
-    df_listing = df_listing.set_index("Code")[["Name", "Marcap"]]
-    df_listing.columns = ["종목명", "시가총액"]
+    df_listing = df_listing.set_index("Code")[["Name", "Market", "Marcap"]]
+    df_listing.columns = ["종목명", "시장구분", "시가총액"]
+    df_listing["시장구분"] = df_listing["시장구분"].replace({"KOSDAQ GLOBAL": "KOSDAQ"})
+    df_listing = df_listing[df_listing["시장구분"].isin(["KOSPI", "KOSDAQ"])]
 
     # 2. 전종목 PER 수집 (Naver 시가총액 페이지 스크래핑, 로그인 불필요)
     log("▷ PER 데이터 수집 중...")
@@ -614,12 +619,16 @@ def run_pipeline_from_cache(criteria):
         )
     df = pd.read_csv(CACHE_CSV, dtype={"종목코드": str})
 
+    if "시장구분" not in df.columns:
+        df["시장구분"] = "전체"  # 구버전 캐시(시장구분 미포함) 호환
+
     trend_cols = ["OPM_trend", "ROA_trend", "ROE_trend", "PBR_trend", "PER_trend"]
     for col in trend_cols:
         if col not in df.columns:
             df[col] = "[]"  # 구버전 캐시(트렌드 미포함) 호환
         df[col] = df[col].fillna("[]").apply(json.loads)
 
+    market = criteria.get("MARKET", "전체")
     cond = (
         (df["시가총액"] >= criteria["MIN_MARCAP"])
         & (df["PER"] > 0) & (df["PER"] <= criteria["MAX_PER"])
@@ -630,12 +639,14 @@ def run_pipeline_from_cache(criteria):
         & (df["PBR"] > 0) & (df["PBR"] <= criteria["MAX_PBR"])
         & (df["F_Score"] >= criteria["MIN_FSCORE"])
     )
+    if market != "전체":
+        cond &= df["시장구분"] == market
     df_pass = df[cond].copy()
     df_pass["시가총액(억)"] = (df_pass["시가총액"] / 100_000_000).round().astype(int)
     df_pass["20일거래대금(억)"] = (df_pass["20D_Avg_Trading_Val"] / 100_000_000).round(1)
 
     df_final = df_pass.rename(columns={"OPM(%)": "영업이익률(%)", "F_Score": "F-Score"})[[
-        "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)",
+        "종목코드", "종목명", "시장구분", "시가총액(억)", "20일거래대금(억)",
         "PER", "PER_trend", "PBR", "PBR_trend",
         "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
         "F-Score", "기준보고서",

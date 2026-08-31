@@ -29,6 +29,8 @@ st.caption(
 with st.sidebar:
     st.header("⚙️ 스크리닝 조건")
 
+    market = st.radio("시장", ["전체", "KOSPI", "KOSDAQ"], horizontal=True)
+
     min_marcap_eok = st.number_input(
         "최소 시가총액 (억원)", min_value=0,
         value=DEFAULT_FILTER_CRITERIA["MIN_MARCAP"] // 100_000_000, step=100,
@@ -65,6 +67,7 @@ with st.sidebar:
     weights = {"value": w_value, "quality": w_quality, "trend": w_trend}
 
     criteria = {
+        "MARKET": market,
         "MIN_MARCAP": min_marcap_eok * 100_000_000,
         "MAX_PER": max_per,
         "MAX_PBR": max_pbr,
@@ -104,7 +107,7 @@ if run_clicked:
             use_container_width=True,
             hide_index=True,
             column_order=[
-                "우선순위", "종합점수", "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)",
+                "우선순위", "종합점수", "종목코드", "종목명", "시장구분", "시가총액(억)", "20일거래대금(억)",
                 "PER", "PER_trend", "PBR", "PBR_trend",
                 "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
                 "F-Score", "기준보고서",
@@ -125,6 +128,9 @@ if run_clicked:
                     "종목명",
                     help="클릭하면 네이버증권 해당 종목 페이지로 이동합니다",
                     display_text=r"#(.*)$",
+                ),
+                "시장구분": st.column_config.TextColumn(
+                    "시장구분", help="상장 시장 (KOSPI 또는 KOSDAQ)",
                 ),
                 "시가총액(억)": st.column_config.NumberColumn(
                     "시가총액(억)", help="발행주식수 × 현재가로 계산한 시가총액 (단위: 억원)",
