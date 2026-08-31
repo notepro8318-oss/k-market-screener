@@ -172,10 +172,33 @@ NET_INCOME_NAMES = [
     "분기순이익", "분기순이익(손실)",
     "반기순이익", "반기순이익(손실)",
 ]
-REVENUE_NAMES = ["매출액", "수익(매출액)", "영업수익"]
+REVENUE_NAMES = ["매출액", "매출", "수익(매출액)", "수익", "영업수익"]
 OP_INCOME_NAMES = ["영업이익", "영업이익(손실)"]
 GROSS_PROFIT_NAMES = ["매출총이익", "매출총이익(손실)"]
-CFO_NAMES = ["영업활동현금흐름", "영업활동으로인한현금흐름"]
+CFO_NAMES = [
+    "영업활동현금흐름", "영업활동으로인한현금흐름", "영업활동 현금흐름", "영업활동으로인한순현금흐름",
+]
+# 현행 K-IFRS 재무제표에는 "경상이익" 계정이 없어 세전이익(법인세비용차감전순이익)으로 대체한다.
+PRETAX_INCOME_NAMES = [
+    "법인세비용차감전순이익(손실)", "법인세비용차감전순이익", "법인세비용차감전순손실", "법인세비용차감전순손익",
+    "법인세차감전순이익(손실)", "법인세차감전순이익", "법인세차감전순손실", "법인세차감전순손익",
+    "법인세비용차감전계속영업이익(손실)", "법인세비용차감전계속영업이익", "법인세비용차감전계속영업손실", "법인세비용차감전계속영업손익",
+]
+CFI_NAMES = [
+    "투자활동현금흐름", "투자활동으로인한현금흐름", "투자활동 현금흐름", "투자활동으로인한순현금흐름",
+]
+CFF_NAMES = [
+    "재무활동현금흐름", "재무활동으로인한현금흐름", "재무활동 현금흐름", "재무활동으로인한순현금흐름",
+]
+
+
+_ACCOUNT_PREFIX_RE = re.compile(r"^(?:[Ⅰ-Ⅻ]+[.\s]*|[IVX]+\.\s*)")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_account_name(name):
+    """DART 계정명의 로마숫자 항목번호(Ⅰ./Ⅱ./...) 접두사를 제거하고 공백을 없애 비교용으로 정규화."""
+    return _WHITESPACE_RE.sub("", _ACCOUNT_PREFIX_RE.sub("", str(name)))
 
 
 def clean_num(val):
@@ -204,9 +227,16 @@ def get_amount(df, account_names, current=True):
       (사업보고서의 전기 전체값 또는 BS의 전기말 잔액)로 대체한다.
     이 우선순위 덕분에 사업보고서(연간)·반기·분기 보고서, BS·IS·CF 항목 모두 동일한 함수로
     올바르게 처리된다.
+
+    계정명 비교는 앞의 로마숫자 항목번호(Ⅰ./Ⅱ./...)를 떼어내고 공백을 모두 제거한 뒤
+    매칭한다 - 같은 계정이라도 회사/연도(심지어 같은 회사의 다른 사업연도)별로
+    "영업활동현금흐름" / "영업활동 현금흐름" / "Ⅰ.영업활동으로인한현금흐름"처럼 항목번호
+    유무와 띄어쓰기가 제각각이라, 정확히 일치해야 하는 방식으로는 계속 놓치는 사례가 나온다.
     """
+    account_nm_norm = df["account_nm"].astype(str).apply(_normalize_account_name)
     for name in account_names:
-        matched = df[df["account_nm"].str.strip() == name]
+        target = _normalize_account_name(name)
+        matched = df[account_nm_norm == target]
         if matched.empty:
             continue
         row = matched.iloc[0]
@@ -307,6 +337,73 @@ def _ratios_from(vals, marcap):
     pbr = (marcap / total_equity) if (marcap and total_equity > 0) else None
     per = (marcap / net_income) if (marcap and net_income and net_income > 0) else None
     return {"OPM": opm, "ROA": roa, "ROE": roe, "PBR": pbr, "PER": per}
+
+
+def _annual_year_financials(df):
+    """사업보고서 하나에서 당기(thstrm)·전기(frmtrm) 두 사업연도의 매출/세전이익/CFO/CFI/CFF를 추출."""
+    is_df = df[df["sj_div"].isin(["IS", "CIS"])]
+    cf = df[df["sj_div"] == "CF"]
+
+    def pair(names, section):
+        return get_amount(section, names, current=True), get_amount(section, names, current=False)
+
+    revenue_t, revenue_p = pair(REVENUE_NAMES, is_df)
+    pretax_t, pretax_p = pair(PRETAX_INCOME_NAMES, is_df)
+    cfo_t, cfo_p = pair(CFO_NAMES, cf)
+    cfi_t, cfi_p = pair(CFI_NAMES, cf)
+    cff_t, cff_p = pair(CFF_NAMES, cf)
+
+    cur = {"revenue": revenue_t, "pretax_income": pretax_t, "cfo": cfo_t, "cfi": cfi_t, "cff": cff_t}
+    prev = {"revenue": revenue_p, "pretax_income": pretax_p, "cfo": cfo_p, "cfi": cfi_p, "cff": cff_p}
+    return cur, prev
+
+
+def compute_5y_financials(dart, ticker, as_of, years=5):
+    """
+    최근 {years}개 사업연도(사업보고서 기준)의 매출액·경상이익(세전이익 근사)·경상이익률·
+    영업활동현금흐름·투자활동현금흐름·재무활동현금흐름·잉여현금흐름(FCF ≈ CFO + CFI)을 계산한다.
+
+    사업보고서 1건이 당기·전기 두 사업연도 값을 함께 내려주므로, 격년으로 조회하면
+    {years}개 연도를 확보하는 데 사업보고서 3회 조회(5개년 기준)면 충분하다.
+    특정 연도를 못 구하면 그 해는 건너뛴다 (리스트 길이가 {years}보다 짧아질 수 있음).
+    """
+    as_of = pd.Timestamp(as_of)
+    base_year = as_of.year - 1 if as_of >= pd.Timestamp(as_of.year, 3, 31) else as_of.year - 2
+
+    year_data = {}
+    probe_year = base_year
+    attempts = 0
+    max_attempts = years + 2  # 격년 조회 실패 시 재시도 여유
+    while len(year_data) < years and attempts < max_attempts:
+        df_annual = _fetch_report(dart, ticker, probe_year, "11011")
+        if df_annual is not None:
+            cur, prev = _annual_year_financials(df_annual)
+            year_data.setdefault(probe_year, cur)
+            year_data.setdefault(probe_year - 1, prev)
+        probe_year -= 2
+        attempts += 1
+
+    if not year_data:
+        return None
+
+    years_sorted = sorted(year_data.keys())[-years:]
+    out = {
+        "연도": years_sorted,
+        "매출액": [], "경상이익": [], "경상이익률(%)": [],
+        "영업활동현금흐름": [], "투자활동현금흐름": [], "재무활동현금흐름": [], "잉여현금흐름": [],
+    }
+    for yr in years_sorted:
+        v = year_data[yr]
+        revenue, pretax = v["revenue"], v["pretax_income"]
+        cfo, cfi, cff = v["cfo"], v["cfi"], v["cff"]
+        out["매출액"].append(round(revenue))
+        out["경상이익"].append(round(pretax))
+        out["경상이익률(%)"].append(round(pretax / revenue * 100, 2) if revenue else 0.0)
+        out["영업활동현금흐름"].append(round(cfo))
+        out["투자활동현금흐름"].append(round(cfi))
+        out["재무활동현금흐름"].append(round(cff))
+        out["잉여현금흐름"].append(round(cfo + cfi))
+    return out
 
 
 def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, include_trend=False):
@@ -623,9 +720,13 @@ def run_pipeline_from_cache(criteria):
         df["시장구분"] = "전체"  # 구버전 캐시(시장구분 미포함) 호환
 
     trend_cols = ["OPM_trend", "ROA_trend", "ROE_trend", "PBR_trend", "PER_trend"]
-    for col in trend_cols:
+    financials_5y_cols = [
+        "연도_5y", "매출액_5y", "경상이익_5y", "경상이익률_5y",
+        "CFO_5y", "CFI_5y", "CFF_5y", "FCF_5y",
+    ]
+    for col in trend_cols + financials_5y_cols:
         if col not in df.columns:
-            df[col] = "[]"  # 구버전 캐시(트렌드 미포함) 호환
+            df[col] = "[]"  # 구버전 캐시(해당 컬럼 미포함) 호환
         df[col] = df[col].fillna("[]").apply(json.loads)
 
     market = criteria.get("MARKET", "전체")
@@ -650,7 +751,7 @@ def run_pipeline_from_cache(criteria):
         "PER", "PER_trend", "PBR", "PBR_trend",
         "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
         "F-Score", "기준보고서",
-    ]]
+    ] + financials_5y_cols]
 
     return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
 

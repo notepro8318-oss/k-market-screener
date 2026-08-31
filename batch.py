@@ -15,8 +15,9 @@ DART 재무제표는 분기 단위로만 갱신되므로 매일 돌릴 필요는
 공시된 후 한 번씩(또는 주 1회) 실행해 data/ 아래 결과를 커밋·푸시하면 된다.
 
 코스피·코스닥 상장 전 종목(PER 계산이 가능한, 즉 흑자인 종목)을 대상으로 하며, 종목당
-OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)도 함께 수집한다 - 그만큼
-DART/가격 조회가 늘어나 종목 수 기준 실행 시간이 길어진다 (수천 종목 기준 1시간 이상 소요 가능).
+OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)와 최근 5개 사업연도의
+매출액/경상이익/경상이익률/영업·투자·재무활동현금흐름/잉여현금흐름도 함께 수집한다 - 그만큼
+DART 조회가 늘어나 종목 수 기준 실행 시간이 길어진다 (수천 종목 기준 1시간 이상 소요 가능).
 """
 
 import datetime
@@ -32,6 +33,7 @@ from screener import (
     CACHE_CSV,
     CACHE_META,
     DATA_DIR,
+    compute_5y_financials,
     compute_raw_metrics,
     create_dart_client,
     run_first_stage_screening,
@@ -60,6 +62,7 @@ def run_batch(dart_api_key, log=print):
 
         metrics = compute_raw_metrics(dart, ticker, as_of, marcap, include_trend=True)
         if metrics is not None:
+            fin5y = compute_5y_financials(dart, ticker, as_of) or {}
             rows.append({
                 "종목코드": ticker,
                 "종목명": name,
@@ -78,6 +81,14 @@ def run_batch(dart_api_key, log=print):
                 "ROE_trend": json.dumps(metrics["ROE_trend"]),
                 "PBR_trend": json.dumps(metrics["PBR_trend"]),
                 "PER_trend": json.dumps(metrics["PER_trend"]),
+                "연도_5y": json.dumps(fin5y.get("연도", [])),
+                "매출액_5y": json.dumps(fin5y.get("매출액", [])),
+                "경상이익_5y": json.dumps(fin5y.get("경상이익", [])),
+                "경상이익률_5y": json.dumps(fin5y.get("경상이익률(%)", [])),
+                "CFO_5y": json.dumps(fin5y.get("영업활동현금흐름", [])),
+                "CFI_5y": json.dumps(fin5y.get("투자활동현금흐름", [])),
+                "CFF_5y": json.dumps(fin5y.get("재무활동현금흐름", [])),
+                "FCF_5y": json.dumps(fin5y.get("잉여현금흐름", [])),
             })
         if (i + 1) % 10 == 0 or (i + 1) == total:
             log(f"  진행: {i + 1}/{total}")

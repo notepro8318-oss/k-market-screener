@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 
 from screener import (
@@ -182,8 +183,12 @@ if run_clicked:
                 ),
             },
         )
+        financials_5y_cols = [
+            "연도_5y", "매출액_5y", "경상이익_5y", "경상이익률_5y",
+            "CFO_5y", "CFI_5y", "CFF_5y", "FCF_5y",
+        ]
         csv_df = df_final.drop(
-            columns=["PER_trend", "PBR_trend", "OPM_trend", "ROA_trend", "ROE_trend"]
+            columns=["PER_trend", "PBR_trend", "OPM_trend", "ROA_trend", "ROE_trend"] + financials_5y_cols
         ).copy()
         csv_df["종목명"] = csv_df["_종목명_plain"]
         csv_bytes = csv_df.drop(columns=["_종목명_plain"]).to_csv(index=False).encode("utf-8-sig")
@@ -193,5 +198,52 @@ if run_clicked:
             file_name="Korea_Value_HighQuality_Stocks.csv",
             mime="text/csv",
         )
+
+        st.subheader("📊 5년 재무 상세")
+        select_labels = (df_final["_종목명_plain"] + " (" + df_final["종목코드"] + ")").tolist()
+        picked_label = st.selectbox("종목 선택", select_labels)
+        picked_row = df_final.iloc[select_labels.index(picked_label)]
+
+        years = picked_row["연도_5y"]
+        if not years:
+            st.info(
+                "이 종목은 5년치 재무 데이터가 없습니다 "
+                "(상장 5년 미만이거나, 은행·금융지주 등 계정 구조가 크게 다른 업종일 수 있습니다)."
+            )
+        else:
+            detail_df = pd.DataFrame({
+                "연도": years,
+                "매출액(억)": [round(v / 100_000_000, 1) for v in picked_row["매출액_5y"]],
+                "경상이익(억)": [round(v / 100_000_000, 1) for v in picked_row["경상이익_5y"]],
+                "경상이익률(%)": picked_row["경상이익률_5y"],
+                "영업활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFO_5y"]],
+                "투자활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFI_5y"]],
+                "재무활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFF_5y"]],
+                "잉여현금흐름(억)": [round(v / 100_000_000, 1) for v in picked_row["FCF_5y"]],
+            })
+            st.dataframe(
+                detail_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "경상이익(억)": st.column_config.NumberColumn(
+                        "경상이익(억)",
+                        help="현행 K-IFRS엔 '경상이익' 계정이 없어 세전이익(법인세비용차감전순이익)으로 대체",
+                    ),
+                    "잉여현금흐름(억)": st.column_config.NumberColumn(
+                        "잉여현금흐름(억)", help="FCF ≈ 영업활동현금흐름 + 투자활동현금흐름",
+                    ),
+                },
+            )
+            st.line_chart(detail_df.set_index("연도")[["매출액(억)", "경상이익(억)"]])
+            st.line_chart(
+                detail_df.set_index("연도")[
+                    ["영업활동CF(억)", "투자활동CF(억)", "재무활동CF(억)", "잉여현금흐름(억)"]
+                ]
+            )
+            st.caption(
+                "경상이익은 세전이익(법인세비용차감전순이익)으로 대체한 값이며, "
+                "잉여현금흐름(FCF)은 영업활동현금흐름 + 투자활동현금흐름으로 근사한 값입니다."
+            )
 else:
     st.info("왼쪽에서 조건을 설정한 뒤 **스크리닝 실행** 버튼을 눌러주세요.")
