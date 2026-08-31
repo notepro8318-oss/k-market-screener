@@ -190,6 +190,20 @@ CFI_NAMES = [
 CFF_NAMES = [
     "재무활동현금흐름", "재무활동으로인한현금흐름", "재무활동 현금흐름", "재무활동으로인한순현금흐름",
 ]
+# 기업분석 체크리스트(건전성/성장성 지표)용 재무상태표·손익계산서 계정
+TOTAL_LIABILITIES_NAMES = ["부채총계"]
+TOTAL_EQUITY_NAMES = ["자본총계"]
+CURRENT_ASSETS_NAMES = ["유동자산"]
+CURRENT_LIABILITIES_NAMES = ["유동부채"]
+INVENTORY_NAMES = ["재고자산", "유동재고자산"]
+RETAINED_EARNINGS_NAMES = ["이익잉여금(결손금)", "이익잉여금"]
+CAPITAL_SURPLUS_NAMES = ["자본잉여금", "주식발행초과금"]
+CAPITAL_STOCK_NAMES = ["자본금", "보통주자본금"]
+RECEIVABLES_NAMES = ["매출채권", "매출채권및기타유동채권", "매출채권및기타채권"]
+COGS_NAMES = ["매출원가"]
+# "이자비용"이 본문 계정으로 안 잡히면 현금흐름표의 이자 지급액(현금기준)으로 근사한다.
+INTEREST_EXPENSE_NAMES = ["이자비용"]
+INTEREST_PAID_CF_NAMES = ["이자의지급", "이자지급(영업)", "이자지급"]
 
 
 _ACCOUNT_PREFIX_RE = re.compile(r"^(?:[Ⅰ-Ⅻ]+[.\s]*|[IVX]+\.\s*)")
@@ -340,28 +354,65 @@ def _ratios_from(vals, marcap):
 
 
 def _annual_year_financials(df):
-    """사업보고서 하나에서 당기(thstrm)·전기(frmtrm) 두 사업연도의 매출/세전이익/CFO/CFI/CFF를 추출."""
+    """
+    사업보고서 하나에서 당기(thstrm)·전기(frmtrm) 두 사업연도의 매출/세전이익/CFO/CFI/CFF와
+    기업분석 체크리스트(건전성/성장성)에 필요한 재무상태표·손익계산서 원본값을 함께 추출.
+    """
     is_df = df[df["sj_div"].isin(["IS", "CIS"])]
     cf = df[df["sj_div"] == "CF"]
+    bs = df[df["sj_div"] == "BS"]
 
     def pair(names, section):
         return get_amount(section, names, current=True), get_amount(section, names, current=False)
 
     revenue_t, revenue_p = pair(REVENUE_NAMES, is_df)
     pretax_t, pretax_p = pair(PRETAX_INCOME_NAMES, is_df)
+    op_income_t, op_income_p = pair(OP_INCOME_NAMES, is_df)
+    cogs_t, cogs_p = pair(COGS_NAMES, is_df)
     cfo_t, cfo_p = pair(CFO_NAMES, cf)
     cfi_t, cfi_p = pair(CFI_NAMES, cf)
     cff_t, cff_p = pair(CFF_NAMES, cf)
 
-    cur = {"revenue": revenue_t, "pretax_income": pretax_t, "cfo": cfo_t, "cfi": cfi_t, "cff": cff_t}
-    prev = {"revenue": revenue_p, "pretax_income": pretax_p, "cfo": cfo_p, "cfi": cfi_p, "cff": cff_p}
+    interest_t, interest_p = pair(INTEREST_EXPENSE_NAMES, is_df)
+    if interest_t == 0.0 and interest_p == 0.0:
+        interest_t, interest_p = pair(INTEREST_PAID_CF_NAMES, cf)  # 이자비용 미기재 시 현금 이자지급액으로 근사
+
+    total_liab_t, total_liab_p = pair(TOTAL_LIABILITIES_NAMES, bs)
+    total_equity_t, total_equity_p = pair(TOTAL_EQUITY_NAMES, bs)
+    current_assets_t, current_assets_p = pair(CURRENT_ASSETS_NAMES, bs)
+    current_liab_t, current_liab_p = pair(CURRENT_LIABILITIES_NAMES, bs)
+    inventory_t, inventory_p = pair(INVENTORY_NAMES, bs)
+    retained_t, retained_p = pair(RETAINED_EARNINGS_NAMES, bs)
+    cap_surplus_t, cap_surplus_p = pair(CAPITAL_SURPLUS_NAMES, bs)
+    cap_stock_t, cap_stock_p = pair(CAPITAL_STOCK_NAMES, bs)
+    receivables_t, receivables_p = pair(RECEIVABLES_NAMES, bs)
+
+    cur = {
+        "revenue": revenue_t, "pretax_income": pretax_t, "op_income": op_income_t, "cogs": cogs_t,
+        "cfo": cfo_t, "cfi": cfi_t, "cff": cff_t, "interest_expense": interest_t,
+        "total_liabilities": total_liab_t, "total_equity": total_equity_t,
+        "current_assets": current_assets_t, "current_liabilities": current_liab_t,
+        "inventory": inventory_t, "retained_earnings": retained_t,
+        "capital_surplus": cap_surplus_t, "capital_stock": cap_stock_t, "receivables": receivables_t,
+    }
+    prev = {
+        "revenue": revenue_p, "pretax_income": pretax_p, "op_income": op_income_p, "cogs": cogs_p,
+        "cfo": cfo_p, "cfi": cfi_p, "cff": cff_p, "interest_expense": interest_p,
+        "total_liabilities": total_liab_p, "total_equity": total_equity_p,
+        "current_assets": current_assets_p, "current_liabilities": current_liab_p,
+        "inventory": inventory_p, "retained_earnings": retained_p,
+        "capital_surplus": cap_surplus_p, "capital_stock": cap_stock_p, "receivables": receivables_p,
+    }
     return cur, prev
 
 
 def compute_5y_financials(dart, ticker, as_of, years=5):
     """
     최근 {years}개 사업연도(사업보고서 기준)의 매출액·경상이익(세전이익 근사)·경상이익률·
-    영업활동현금흐름·투자활동현금흐름·재무활동현금흐름·잉여현금흐름(FCF ≈ CFO + CFI)을 계산한다.
+    영업활동현금흐름·투자활동현금흐름·재무활동현금흐름·잉여현금흐름(FCF ≈ CFO + CFI)과,
+    기업분석 체크리스트의 건전성(부채비율/당좌비율/이자보상배율/유보율)·성장성(매출성장률/
+    매출채권회전율/재고자산회전율) 지표를 함께 계산한다. 이미 조회한 사업보고서에서 더 많은
+    계정을 뽑아내는 것뿐이라 DART 호출이 추가로 들지는 않는다.
 
     사업보고서 1건이 당기·전기 두 사업연도 값을 함께 내려주므로, 격년으로 조회하면
     {years}개 연도를 확보하는 데 사업보고서 3회 조회(5개년 기준)면 충분하다.
@@ -391,6 +442,8 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
         "연도": years_sorted,
         "매출액": [], "경상이익": [], "경상이익률(%)": [],
         "영업활동현금흐름": [], "투자활동현금흐름": [], "재무활동현금흐름": [], "잉여현금흐름": [],
+        "부채비율(%)": [], "당좌비율(%)": [], "이자보상배율": [], "유보율(%)": [],
+        "매출성장률(%)": [], "매출채권회전율": [], "재고자산회전율": [],
     }
     for yr in years_sorted:
         v = year_data[yr]
@@ -403,6 +456,31 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
         out["투자활동현금흐름"].append(round(cfi))
         out["재무활동현금흐름"].append(round(cff))
         out["잉여현금흐름"].append(round(cfo + cfi))
+
+        total_liab, total_equity = v["total_liabilities"], v["total_equity"]
+        current_assets, current_liab = v["current_assets"], v["current_liabilities"]
+        inventory = v["inventory"]
+        retained, cap_surplus, cap_stock = v["retained_earnings"], v["capital_surplus"], v["capital_stock"]
+        op_income, interest_expense = v["op_income"], v["interest_expense"]
+        cogs, receivables = v["cogs"], v["receivables"]
+
+        out["부채비율(%)"].append(round(total_liab / total_equity * 100, 2) if total_equity else 0.0)
+        quick_assets = current_assets - inventory
+        out["당좌비율(%)"].append(round(quick_assets / current_liab * 100, 2) if current_liab else 0.0)
+        out["이자보상배율"].append(round(op_income / interest_expense, 2) if interest_expense else 0.0)
+        out["유보율(%)"].append(round((retained + cap_surplus) / cap_stock * 100, 2) if cap_stock else 0.0)
+
+        prev_v = year_data.get(yr - 1)
+        prev_revenue = prev_v["revenue"] if prev_v else 0
+        out["매출성장률(%)"].append(
+            round((revenue - prev_revenue) / prev_revenue * 100, 2) if prev_revenue else 0.0
+        )
+
+        avg_receivables = (receivables + prev_v["receivables"]) / 2 if prev_v else receivables
+        out["매출채권회전율"].append(round(revenue / avg_receivables, 2) if avg_receivables else 0.0)
+
+        avg_inventory = (inventory + prev_v["inventory"]) / 2 if prev_v else inventory
+        out["재고자산회전율"].append(round(cogs / avg_inventory, 2) if avg_inventory else 0.0)
     return out
 
 
@@ -723,6 +801,8 @@ def run_pipeline_from_cache(criteria):
     financials_5y_cols = [
         "연도_5y", "매출액_5y", "경상이익_5y", "경상이익률_5y",
         "CFO_5y", "CFI_5y", "CFF_5y", "FCF_5y",
+        "부채비율_5y", "당좌비율_5y", "이자보상배율_5y", "유보율_5y",
+        "매출성장률_5y", "매출채권회전율_5y", "재고자산회전율_5y",
     ]
     for col in trend_cols + financials_5y_cols:
         if col not in df.columns:
