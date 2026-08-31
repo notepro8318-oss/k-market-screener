@@ -88,6 +88,12 @@ if run_clicked:
         df_final = df_final.sort_values(by="종합점수", ascending=False)
         df_final.insert(0, "우선순위", range(1, len(df_final) + 1))
 
+        df_final["_종목명_plain"] = df_final["종목명"]
+        df_final["종목명"] = df_final.apply(
+            lambda r: f"https://finance.naver.com/item/main.naver?code={r['종목코드']}#{r['_종목명_plain']}",
+            axis=1,
+        )
+
         st.success(f"{len(df_final)}개 종목이 조건을 통과했습니다.")
         st.caption(
             "추세 컬럼은 과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 흐름입니다. "
@@ -97,6 +103,12 @@ if run_clicked:
             df_final,
             use_container_width=True,
             hide_index=True,
+            column_order=[
+                "우선순위", "종합점수", "종목코드", "종목명", "시가총액(억)", "20일거래대금(억)",
+                "PER", "PER_trend", "PBR", "PBR_trend",
+                "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
+                "F-Score", "기준보고서",
+            ],
             column_config={
                 "우선순위": st.column_config.NumberColumn(
                     "우선순위", help="종합점수 기준 이 스크리닝 결과 내 순위 (1위가 최우선)",
@@ -109,8 +121,10 @@ if run_clicked:
                 "종목코드": st.column_config.TextColumn(
                     "종목코드", help="한국거래소(KRX) 상장 종목 코드 (6자리)",
                 ),
-                "종목명": st.column_config.TextColumn(
-                    "종목명", help="종목의 정식 명칭",
+                "종목명": st.column_config.LinkColumn(
+                    "종목명",
+                    help="클릭하면 네이버증권 해당 종목 페이지로 이동합니다",
+                    display_text=r"#(.*)$",
                 ),
                 "시가총액(억)": st.column_config.NumberColumn(
                     "시가총액(억)", help="발행주식수 × 현재가로 계산한 시가총액 (단위: 억원)",
@@ -162,9 +176,11 @@ if run_clicked:
                 ),
             },
         )
-        csv_bytes = df_final.drop(
+        csv_df = df_final.drop(
             columns=["PER_trend", "PBR_trend", "OPM_trend", "ROA_trend", "ROE_trend"]
-        ).to_csv(index=False).encode("utf-8-sig")
+        ).copy()
+        csv_df["종목명"] = csv_df["_종목명_plain"]
+        csv_bytes = csv_df.drop(columns=["_종목명_plain"]).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "📥 CSV 다운로드",
             data=csv_bytes,
