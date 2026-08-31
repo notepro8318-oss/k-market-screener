@@ -4,6 +4,7 @@ import time
 from io import StringIO
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 import FinanceDataReader as fdr
@@ -641,3 +642,59 @@ def run_pipeline_from_cache(criteria):
     ]]
 
     return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
+
+
+def compute_priority_scores(df, weights=None):
+    """
+    스크리닝 결과(df) 내에서만 상대 순위를 매겨 0~100점 종합점수(투자 우선순위)를 계산한다.
+
+    절대값(z-score 등) 대신 종목 간 순위(percentile rank)를 합산하는 방식(Magic Formula류)이라
+    한두 종목의 극단값에 전체 스케일이 휘둘리지 않는다.
+
+    - 저평가(Value): PER·PBR이 낮을수록 높은 점수
+    - 수익성(Quality): 영업이익률·ROA·ROE·F-Score가 높을수록 높은 점수
+    - 개선추세(Trend): OPM/ROA/ROE 추세(과거 최대 3개 사업연도 + 현재 TTM)의 평균 증감폭이
+      클수록(수익성이 개선되는 중일수록) 높은 점수
+    """
+    weights = weights or {"value": 1.0, "quality": 1.0, "trend": 1.0}
+    total_w = sum(weights.values()) or 1.0
+
+    def pct_rank(series, ascending):
+        if len(series) <= 1:
+            return pd.Series(1.0, index=series.index)
+        return series.rank(pct=True, ascending=ascending)
+
+    def trend_slope(cell):
+        if not isinstance(cell, list) or len(cell) < 2:
+            return 0.0
+        return float(np.mean(np.diff(cell)))
+
+    value_score = (
+        pct_rank(df["PER"], ascending=False) + pct_rank(df["PBR"], ascending=False)
+    ) / 2
+
+    quality_score = (
+        pct_rank(df["영업이익률(%)"], ascending=True)
+        + pct_rank(df["ROA(%)"], ascending=True)
+        + pct_rank(df["ROE(%)"], ascending=True)
+        + pct_rank(df["F-Score"], ascending=True)
+    ) / 4
+
+    trend_raw = pd.DataFrame({
+        "OPM": df["OPM_trend"].apply(trend_slope),
+        "ROA": df["ROA_trend"].apply(trend_slope),
+        "ROE": df["ROE_trend"].apply(trend_slope),
+    }, index=df.index)
+    trend_score = (
+        pct_rank(trend_raw["OPM"], ascending=True)
+        + pct_rank(trend_raw["ROA"], ascending=True)
+        + pct_rank(trend_raw["ROE"], ascending=True)
+    ) / 3
+
+    composite = (
+        value_score * weights.get("value", 1.0)
+        + quality_score * weights.get("quality", 1.0)
+        + trend_score * weights.get("trend", 1.0)
+    ) / total_w
+
+    return (composite * 100).round(1)

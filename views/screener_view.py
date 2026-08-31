@@ -1,6 +1,11 @@
 import streamlit as st
 
-from screener import DEFAULT_FILTER_CRITERIA, load_cache_meta, run_pipeline_from_cache
+from screener import (
+    DEFAULT_FILTER_CRITERIA,
+    compute_priority_scores,
+    load_cache_meta,
+    run_pipeline_from_cache,
+)
 
 st.title("📈 수익가치주 찾기")
 st.caption("시가총액 · PER · PBR · 수익성(OPM/ROA/ROE) · Piotroski F-Score 기반 2단계 필터링")
@@ -51,6 +56,14 @@ with st.sidebar:
         "최소 F-Score", min_value=0, max_value=9, value=DEFAULT_FILTER_CRITERIA["MIN_FSCORE"],
     )
 
+    with st.expander("🏆 투자 우선순위 가중치", expanded=False):
+        st.caption("스크리닝 결과 안에서만 상대 순위를 매겨 종합점수(0~100점)를 계산합니다.")
+        w_value = st.slider("저평가 (PER·PBR)", 0, 100, 33)
+        w_quality = st.slider("수익성 (영업이익률·ROA·ROE·F-Score)", 0, 100, 33)
+        w_trend = st.slider("개선추세 (OPM/ROA/ROE 추세)", 0, 100, 34)
+
+    weights = {"value": w_value, "quality": w_quality, "trend": w_trend}
+
     criteria = {
         "MIN_MARCAP": min_marcap_eok * 100_000_000,
         "MAX_PER": max_per,
@@ -70,13 +83,29 @@ if run_clicked:
     if df_final.empty:
         st.warning("조건을 모두 만족하는 종목이 없습니다. 조건을 완화한 뒤 다시 시도해보세요.")
     else:
+        df_final = df_final.copy()
+        df_final["종합점수"] = compute_priority_scores(df_final, weights)
+        df_final = df_final.sort_values(by="종합점수", ascending=False)
+        df_final.insert(0, "우선순위", range(1, len(df_final) + 1))
+
         st.success(f"{len(df_final)}개 종목이 조건을 통과했습니다.")
-        st.caption("추세 컬럼은 과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 흐름입니다.")
+        st.caption(
+            "추세 컬럼은 과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 흐름입니다. "
+            "종합점수는 이 스크리닝 결과 안에서의 상대 순위를 합산한 투자 우선순위(0~100점, 높을수록 우선)입니다."
+        )
         st.dataframe(
             df_final,
             use_container_width=True,
             hide_index=True,
             column_config={
+                "우선순위": st.column_config.NumberColumn(
+                    "우선순위", help="종합점수 기준 이 스크리닝 결과 내 순위 (1위가 최우선)",
+                ),
+                "종합점수": st.column_config.NumberColumn(
+                    "종합점수",
+                    help="저평가(PER·PBR)·수익성(영업이익률·ROA·ROE·F-Score)·개선추세(OPM/ROA/ROE 추세)"
+                    " 순위를 사이드바 가중치로 합산한 점수 (0~100점, 이 스크리닝 결과 내 상대 순위 기준)",
+                ),
                 "종목코드": st.column_config.TextColumn(
                     "종목코드", help="한국거래소(KRX) 상장 종목 코드 (6자리)",
                 ),
