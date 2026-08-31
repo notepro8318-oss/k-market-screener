@@ -77,11 +77,60 @@ if run_clicked:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "PER_trend": st.column_config.LineChartColumn("PER 추세", width="small"),
-                "PBR_trend": st.column_config.LineChartColumn("PBR 추세", width="small"),
-                "OPM_trend": st.column_config.LineChartColumn("영업이익률 추세", width="small"),
-                "ROA_trend": st.column_config.LineChartColumn("ROA 추세", width="small"),
-                "ROE_trend": st.column_config.LineChartColumn("ROE 추세", width="small"),
+                "종목코드": st.column_config.TextColumn(
+                    "종목코드", help="한국거래소(KRX) 상장 종목 코드 (6자리)",
+                ),
+                "종목명": st.column_config.TextColumn(
+                    "종목명", help="종목의 정식 명칭",
+                ),
+                "시가총액(억)": st.column_config.NumberColumn(
+                    "시가총액(억)", help="발행주식수 × 현재가로 계산한 시가총액 (단위: 억원)",
+                ),
+                "20일거래대금(억)": st.column_config.NumberColumn(
+                    "20일거래대금(억)", help="최근 20거래일 평균 거래대금 (단위: 억원). 유동성이 낮은 종목을 걸러내는 데 사용",
+                ),
+                "PER": st.column_config.NumberColumn(
+                    "PER", help="주가수익비율 = 시가총액 ÷ TTM(최근 12개월) 순이익. 낮을수록 이익 대비 저평가",
+                ),
+                "PER_trend": st.column_config.LineChartColumn(
+                    "PER 추세", width="small",
+                    help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) PER 흐름",
+                ),
+                "PBR": st.column_config.NumberColumn(
+                    "PBR", help="주가순자산비율 = 시가총액 ÷ 자기자본(순자산). 낮을수록 자산 대비 저평가",
+                ),
+                "PBR_trend": st.column_config.LineChartColumn(
+                    "PBR 추세", width="small",
+                    help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) PBR 흐름",
+                ),
+                "영업이익률(%)": st.column_config.NumberColumn(
+                    "영업이익률(%)", help="영업이익 ÷ 매출액 × 100 (TTM 기준). 본업의 수익성 지표",
+                ),
+                "OPM_trend": st.column_config.LineChartColumn(
+                    "영업이익률 추세", width="small",
+                    help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 영업이익률 흐름",
+                ),
+                "ROA(%)": st.column_config.NumberColumn(
+                    "ROA(%)", help="총자산이익률 = 순이익 ÷ 총자산 × 100 (TTM 기준). 자산을 얼마나 효율적으로 굴렸는지 지표",
+                ),
+                "ROA_trend": st.column_config.LineChartColumn(
+                    "ROA 추세", width="small",
+                    help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) ROA 흐름",
+                ),
+                "ROE(%)": st.column_config.NumberColumn(
+                    "ROE(%)", help="자기자본이익률 = 순이익 ÷ 자기자본 × 100 (TTM 기준). 주주 자본 대비 수익성 지표",
+                ),
+                "ROE_trend": st.column_config.LineChartColumn(
+                    "ROE 추세", width="small",
+                    help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) ROE 흐름",
+                ),
+                "F-Score": st.column_config.NumberColumn(
+                    "F-Score",
+                    help="Piotroski F-Score (0~9점). 수익성·재무건전성·효율성 9개 항목 중 충족한 개수 — 높을수록 우량",
+                ),
+                "기준보고서": st.column_config.TextColumn(
+                    "기준보고서", help="TTM 계산에 사용된 최신 DART 공시(사업/반기/분기보고서)의 접수일",
+                ),
             },
         )
         csv_bytes = df_final.drop(
