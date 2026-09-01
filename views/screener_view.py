@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import streamlit as st
 
@@ -224,15 +226,20 @@ else:
                 "(상장 5년 미만이거나, 은행·금융지주 등 계정 구조가 크게 다른 업종일 수 있습니다)."
             )
         else:
+            def _ceil(val, decimals=1):
+                """소수점 이하 절상(올림). math.ceil은 항상 +무한대 방향으로 반올림한다."""
+                factor = 10 ** decimals
+                return math.ceil(val * factor) / factor
+
             detail_df = pd.DataFrame({
                 "연도": [str(y) for y in years],
-                "매출액(억)": [round(v / 100_000_000, 1) for v in picked_row["매출액_5y"]],
-                "경상이익(억)": [round(v / 100_000_000, 1) for v in picked_row["경상이익_5y"]],
-                "경상이익률(%)": picked_row["경상이익률_5y"],
-                "영업활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFO_5y"]],
-                "투자활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFI_5y"]],
-                "재무활동CF(억)": [round(v / 100_000_000, 1) for v in picked_row["CFF_5y"]],
-                "잉여현금흐름(억)": [round(v / 100_000_000, 1) for v in picked_row["FCF_5y"]],
+                "매출액(억)": [_ceil(v / 100_000_000) for v in picked_row["매출액_5y"]],
+                "경상이익(억)": [_ceil(v / 100_000_000) for v in picked_row["경상이익_5y"]],
+                "경상이익률(%)": [_ceil(v, 2) for v in picked_row["경상이익률_5y"]],
+                "영업활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFO_5y"]],
+                "투자활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFI_5y"]],
+                "재무활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFF_5y"]],
+                "잉여현금흐름(억)": [_ceil(v / 100_000_000) for v in picked_row["FCF_5y"]],
             })
             st.dataframe(
                 detail_df,
@@ -266,12 +273,15 @@ else:
                     ),
                 },
             )
-            st.line_chart(detail_df.set_index("연도")[["매출액(억)", "경상이익(억)"]])
-            st.line_chart(
-                detail_df.set_index("연도")[
-                    ["영업활동CF(억)", "투자활동CF(억)", "재무활동CF(억)", "잉여현금흐름(억)"]
-                ]
-            )
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                st.line_chart(detail_df.set_index("연도")[["매출액(억)", "경상이익(억)"]])
+            with chart_col2:
+                st.line_chart(
+                    detail_df.set_index("연도")[
+                        ["영업활동CF(억)", "투자활동CF(억)", "재무활동CF(억)", "잉여현금흐름(억)"]
+                    ]
+                )
             st.caption(
                 "경상이익은 세전이익(법인세비용차감전순이익)으로 대체한 값이며, "
                 "잉여현금흐름(FCF)은 영업활동현금흐름 + 투자활동현금흐름으로 근사한 값입니다."
