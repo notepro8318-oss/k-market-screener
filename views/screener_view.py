@@ -107,7 +107,7 @@ elif df_final.empty:
 else:
     st.success(f"{len(df_final)}개 종목이 조건을 통과했습니다.")
     st.caption(
-        "추세 컬럼은 최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) 흐름입니다. "
+        "추세 컬럼은 과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 흐름입니다. "
         "종합점수는 이 스크리닝 결과 안에서의 상대 순위를 합산한 투자 우선순위(0~100점, 높을수록 우선)입니다."
     )
     st.dataframe(
@@ -151,35 +151,35 @@ else:
             ),
             "PER_trend": st.column_config.LineChartColumn(
                 "PER 추세", width="small",
-                help="최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) PER 흐름",
+                help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) PER 흐름",
             ),
             "PBR": st.column_config.NumberColumn(
                 "PBR", help="주가순자산비율 = 시가총액 ÷ 자기자본(순자산). 낮을수록 자산 대비 저평가",
             ),
             "PBR_trend": st.column_config.LineChartColumn(
                 "PBR 추세", width="small",
-                help="최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) PBR 흐름",
+                help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) PBR 흐름",
             ),
             "영업이익률(%)": st.column_config.NumberColumn(
                 "영업이익률(%)", help="영업이익 ÷ 매출액 × 100 (TTM 기준). 본업의 수익성 지표",
             ),
             "OPM_trend": st.column_config.LineChartColumn(
                 "영업이익률 추세", width="small",
-                help="최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) 영업이익률 흐름",
+                help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) 영업이익률 흐름",
             ),
             "ROA(%)": st.column_config.NumberColumn(
                 "ROA(%)", help="총자산이익률 = 순이익 ÷ 총자산 × 100 (TTM 기준). 자산을 얼마나 효율적으로 굴렸는지 지표",
             ),
             "ROA_trend": st.column_config.LineChartColumn(
                 "ROA 추세", width="small",
-                help="최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) ROA 흐름",
+                help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) ROA 흐름",
             ),
             "ROE(%)": st.column_config.NumberColumn(
                 "ROE(%)", help="자기자본이익률 = 순이익 ÷ 자기자본 × 100 (TTM 기준). 주주 자본 대비 수익성 지표",
             ),
             "ROE_trend": st.column_config.LineChartColumn(
                 "ROE 추세", width="small",
-                help="최근 2년(직전 사업연도 + 현재 TTM, 가장 오른쪽) ROE 흐름",
+                help="과거 최대 3개 사업연도 + 현재 TTM(가장 오른쪽) ROE 흐름",
             ),
             "F-Score": st.column_config.NumberColumn(
                 "F-Score",

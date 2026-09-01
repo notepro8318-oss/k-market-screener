@@ -491,10 +491,10 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
     Piotroski F-Score를 산출한다. 조건(criteria) 필터링은 하지 않고 계산된 값을 그대로 반환한다
     (배치 캐시처럼 나중에 임의 조건으로 다시 걸러낼 원본 지표가 필요한 경우에 사용).
 
-    include_trend=True이면 최근 2년(직전 사업연도 1개 + 현재 TTM)의 OPM/ROA/ROE/PBR/PER을
-    *_trend 리스트로 함께 반환한다 (스파크라인용). FinanceDataReader 조회 1회가 추가로 필요해
-    호출 비용이 늘어나므로, 이 값이 실제로 쓰이는 배치 캐시 생성(batch.py)에서만 켠다 -
-    백테스트/CLI 등 다른 호출자는 기본값(False)을 그대로 쓴다.
+    include_trend=True이면 과거 최대 3개 사업연도 + 현재 TTM의 OPM/ROA/ROE/PBR/PER을
+    *_trend 리스트로 함께 반환한다 (스파크라인용). DART 조회 1회, FinanceDataReader 조회 1회가
+    추가로 필요해 호출 비용이 늘어나므로, 이 값이 실제로 쓰이는 배치 캐시 생성(batch.py)에서만
+    켠다 - 백테스트/CLI 등 다른 호출자는 기본값(False)을 그대로 쓴다.
 
     TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
     (분기/반기 보고서는 DART가 전년동기누적(frmtrm_add_amount)을 함께 내려주므로 추가 조회 없이
@@ -627,9 +627,9 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
     }
 
     if include_trend:
-        # 최근 2년(직전 사업연도 1개 + 현재 TTM) 흐름
+        # 과거 최대 3개 사업연도 + 현재 TTM
         try:
-            price_hist = fdr.DataReader(ticker, pd.Timestamp(as_of) - pd.DateOffset(years=2), pd.Timestamp(as_of))
+            price_hist = fdr.DataReader(ticker, pd.Timestamp(as_of) - pd.DateOffset(years=5), pd.Timestamp(as_of))
         except Exception:
             price_hist = None
         latest_close = price_hist.iloc[-1]["Close"] if price_hist is not None and not price_hist.empty else None
@@ -642,19 +642,31 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
                 return None
             return row.iloc[-1]["Close"] * (marcap / latest_close)
 
-        # 직전 사업연도(현재 - 1년)의 원본값: 이미 조회해 둔 보고서에서 바로 뽑아 쓰므로
-        # 추가 DART 조회가 필요 없다.
+        year_metrics = {}
         if current_code == "11011":
-            _, prev_year_vals = _annual_year_metrics(df_current)  # frmtrm = 직전 사업연도
+            cur_y, prev_y = _annual_year_metrics(df_current)
+            year_metrics[current_year - 1] = prev_y
+            probe_year = current_year - 2
         else:
-            prev_year_vals, _ = _annual_year_metrics(df_annual)  # thstrm = 직전 사업연도
-        prev_year = current_year - 1
+            annual_cur, annual_prev = _annual_year_metrics(df_annual)
+            year_metrics[current_year - 2] = annual_prev
+            year_metrics[current_year - 1] = annual_cur
+            probe_year = current_year - 3
+
+        df_older = _fetch_report(dart, ticker, probe_year, "11011")
+        if df_older is None:
+            df_older = _fetch_report(dart, ticker, probe_year - 1, "11011")
+        if df_older is not None:
+            older_cur, older_prev = _annual_year_metrics(df_older)
+            year_metrics[probe_year] = older_cur
+            year_metrics[probe_year - 1] = older_prev
 
         trend = {"OPM": [], "ROA": [], "ROE": [], "PBR": [], "PER": []}
-        r = _ratios_from(prev_year_vals, marcap_at_year_end(prev_year))
-        for key in trend:
-            if r[key] is not None:
-                trend[key].append(round(float(r[key]), 2))
+        for yr in sorted(year_metrics.keys())[-3:]:
+            r = _ratios_from(year_metrics[yr], marcap_at_year_end(yr))
+            for key in trend:
+                if r[key] is not None:
+                    trend[key].append(round(float(r[key]), 2))
         trend["OPM"].append(round(opm, 2))
         trend["ROA"].append(round(roa, 2))
         trend["ROE"].append(round(roe, 2))
@@ -833,7 +845,7 @@ def compute_priority_scores(df, weights=None):
 
     - 저평가(Value): PER·PBR이 낮을수록 높은 점수
     - 수익성(Quality): 영업이익률·ROA·ROE·F-Score가 높을수록 높은 점수
-    - 개선추세(Trend): OPM/ROA/ROE 추세(최근 2년: 직전 사업연도 + 현재 TTM)의 평균 증감폭이
+    - 개선추세(Trend): OPM/ROA/ROE 추세(과거 최대 3개 사업연도 + 현재 TTM)의 평균 증감폭이
       클수록(수익성이 개선되는 중일수록) 높은 점수
     """
     weights = weights or {"value": 1.0, "quality": 1.0, "trend": 1.0}
