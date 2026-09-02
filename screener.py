@@ -58,6 +58,22 @@ DEFAULT_FILTER_CRITERIA = {
     "MIN_FSCORE": 7,                     # 최종 Piotroski F-Score 컷오프
 }
 
+# 성장주 스크리닝 기본 조건. Forward PEG는 애널리스트 컨센서스 없이는 계산할 수 없어
+# 과거 3개년 영업이익 CAGR 대비 PER(Trailing PEG, GARP 취지의 근사치)로 대체한다.
+# 최근 분기 YoY는 사업보고서(4분기 확정) 시점에는 계산할 수 없어(None) 그 기간엔 걸리지 않는다.
+GROWTH_DEFAULT_FILTER_CRITERIA = {
+    "MARKET": "전체",                        # "전체" | "KOSPI" | "KOSDAQ"
+    "MIN_REVENUE_CAGR_3Y": 15.0,             # 매출액 3개년 CAGR 15% 이상
+    "MIN_REVENUE_YOY_Q": 20.0,               # 최근 분기 매출액 YoY 20% 이상
+    "MIN_OP_INCOME_CAGR_3Y": 20.0,           # 영업이익 3개년 CAGR 20% 이상
+    "MIN_OP_INCOME_YOY_Q": 25.0,             # 최근 분기 영업이익 YoY 25% 이상
+    "MAX_PEG": 1.0,                          # Trailing PEG 1.0 이하
+    "MIN_ROE": 15.0,                         # ROE 15% 이상
+    "MIN_ROIC": 12.0,                        # ROIC 12% 이상
+    "MAX_DEBT_RATIO": 100.0,                 # 부채비율 100% 이하
+    "MIN_INTEREST_COVERAGE": 5.0,            # 이자보상배율 5배 이상
+}
+
 
 def create_dart_client(dart_api_key, retries=4, delay=5, log=print):
     """
@@ -296,6 +312,18 @@ COGS_NAMES = ["매출원가"]
 INTEREST_EXPENSE_NAMES = ["이자비용"]
 INTEREST_PAID_CF_NAMES = ["이자의지급", "이자지급(영업)", "이자지급"]
 
+# 성장주 스크리닝(ROIC)용 계정. 차입금은 서로 다른 계정을 항목별로 각각 조회해 합산한다
+# (get_amount는 "같은 개념의 표기 편차 중 첫 매치"를 찾는 함수라, 단기/장기차입금처럼
+# 실제로 별개인 계정을 하나의 리스트에 넣으면 먼저 매치되는 쪽만 잡히고 나머지가 누락된다).
+CASH_NAMES = ["현금및현금성자산"]
+INCOME_TAX_EXPENSE_NAMES = ["법인세비용", "법인세비용(수익)", "법인세비용(환입)", "계속영업법인세비용"]
+BORROWING_COMPONENT_GROUPS = [
+    ["단기차입금"],
+    ["유동성장기부채", "유동성장기차입금", "유동성사채"],
+    ["장기차입금"],
+    ["사채"],
+]
+
 
 _ACCOUNT_PREFIX_RE = re.compile(r"^(?:[Ⅰ-Ⅻ]+[.\s]*|[IVX]+\.\s*)")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -352,6 +380,46 @@ def get_amount(df, account_names, current=True):
         if val is not None:
             return val
     return 0.0
+
+
+def get_single_quarter_amount(df, account_names):
+    """
+    당해 단일분기(thstrm_amount)·전년동기 단일분기(frmtrm_q_amount) 값을 반환.
+    get_amount와 달리 반기/분기 누적값(thstrm_add_amount/frmtrm_add_amount)을 우선하지 않고
+    항상 "그 분기 3개월"만의 값을 사용한다 (최근 분기 YoY 계산용). 사업보고서(11011)에는
+    이 두 컬럼이 없어 (0.0, 0.0)이 반환되므로 호출 쪽에서 별도로 걸러야 한다.
+    """
+    account_nm_norm = df["account_nm"].astype(str).apply(_normalize_account_name)
+    for name in account_names:
+        target = _normalize_account_name(name)
+        matched = df[account_nm_norm == target]
+        if matched.empty:
+            continue
+        row = matched.iloc[0]
+        cur = _amount(row, ["thstrm_amount"])
+        prev = _amount(row, ["frmtrm_q_amount"])
+        if cur is not None or prev is not None:
+            return (cur or 0.0), (prev or 0.0)
+    return 0.0, 0.0
+
+
+def _total_borrowings(bs):
+    """이자부부채(단기차입금+유동성장기부채+장기차입금+사채) 합계. ROIC의 투하자본 계산용."""
+    return sum(get_amount(bs, names, current=True) for names in BORROWING_COMPONENT_GROUPS)
+
+
+def compute_cagr(values):
+    """
+    연간값 리스트(오래된→최신 순)의 연평균성장률(%)을 계산. 시작/끝 값이 0 이하이면
+    (적자였거나 데이터가 없으면) 의미 없는 값이 나오므로 None을 반환한다.
+    """
+    if not values or len(values) < 2:
+        return None
+    start, end = values[0], values[-1]
+    n = len(values) - 1
+    if start <= 0 or end <= 0:
+        return None
+    return round(((end / start) ** (1 / n) - 1) * 100, 2)
 
 
 def _report_candidates(as_of):
@@ -531,7 +599,7 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
     years_sorted = sorted(year_data.keys())[-years:]
     out = {
         "연도": years_sorted,
-        "매출액": [], "경상이익": [], "경상이익률(%)": [],
+        "매출액": [], "영업이익": [], "경상이익": [], "경상이익률(%)": [],
         "영업활동현금흐름": [], "투자활동현금흐름": [], "재무활동현금흐름": [], "잉여현금흐름": [],
         "부채비율(%)": [], "당좌비율(%)": [], "이자보상배율": [], "유보율(%)": [],
         "매출성장률(%)": [], "매출채권회전율": [], "재고자산회전율": [],
@@ -541,6 +609,7 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
         revenue, pretax = v["revenue"], v["pretax_income"]
         cfo, cfi, cff = v["cfo"], v["cfi"], v["cff"]
         out["매출액"].append(round(revenue))
+        out["영업이익"].append(round(v["op_income"]))
         out["경상이익"].append(round(pretax))
         out["경상이익률(%)"].append(round(pretax / revenue * 100, 2) if revenue else 0.0)
         out["영업활동현금흐름"].append(round(cfo))
@@ -575,7 +644,9 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
     return out
 
 
-def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, include_trend=False):
+def compute_raw_metrics(
+    dart, ticker, as_of, marcap, max_report_attempts=4, include_trend=False, include_growth=False
+):
     """
     as_of 시점까지 공시된 가장 최근 보고서(사업/반기/분기)를 찾아 TTM(최근 12개월 합산)
     기준으로 매출·영업이익·순이익·매출총이익·영업활동현금흐름을 계산하고, OPM/ROA/ROE/PBR/PER/
@@ -586,6 +657,11 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
     *_trend 리스트로 함께 반환한다 (스파크라인용). DART 조회 1회, FinanceDataReader 조회 1회가
     추가로 필요해 호출 비용이 늘어나므로, 이 값이 실제로 쓰이는 배치 캐시 생성(batch.py)에서만
     켠다 - 백테스트/CLI 등 다른 호출자는 기본값(False)을 그대로 쓴다.
+
+    include_growth=True이면 성장주 스크리닝용 ROIC(%)와 최근 분기 매출/영업이익 YoY(%)를
+    함께 반환한다. 이미 조회한 df_current/df_annual에서 추가로 계정을 뽑아내는 것뿐이라
+    DART 호출이 추가로 들지는 않는다. 가장 최근 보고서가 사업보고서(11011)이면 분기 단위
+    금액을 따로 제공하지 않아 분기 YoY 두 값은 None으로 반환된다.
 
     TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
     (분기/반기 보고서는 DART가 전년동기누적(frmtrm_add_amount)을 함께 내려주므로 추가 조회 없이
@@ -636,6 +712,10 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
         gross_profit_t = get_amount(is_df, GROSS_PROFIT_NAMES, current=True)
         gross_profit_prev = get_amount(is_df, GROSS_PROFIT_NAMES, current=False)
         cfo_t = get_amount(cf, CFO_NAMES, current=True)
+        # 사업보고서는 4분기만 따로 떼어낸 값을 제공하지 않아 "최근 분기 YoY"는 계산하지 않는다.
+        tax_t = get_amount(is_df, INCOME_TAX_EXPENSE_NAMES, current=True)
+        pretax_t = get_amount(is_df, PRETAX_INCOME_NAMES, current=True)
+        q_revenue_t = q_revenue_prev = q_op_income_t = q_op_income_prev = None
     else:
         # 분기/반기 보고서 -> TTM = 직전 사업연도 전체 - 전년동기누적 + 당기누적
         df_annual = None
@@ -661,6 +741,12 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
         net_income_t = ttm_value(NET_INCOME_NAMES, is_df, is_annual)
         gross_profit_t = ttm_value(GROSS_PROFIT_NAMES, is_df, is_annual)
         cfo_t = ttm_value(CFO_NAMES, cf, cf_annual)
+        tax_t = ttm_value(INCOME_TAX_EXPENSE_NAMES, is_df, is_annual)
+        pretax_t = ttm_value(PRETAX_INCOME_NAMES, is_df, is_annual)
+        # 최근 분기(단일분기, 누적 아님) YoY - DART가 분기/반기 보고서에 함께 내려주는
+        # thstrm_amount(당해 3개월)/frmtrm_q_amount(전년동기 3개월)를 그대로 사용.
+        q_revenue_t, q_revenue_prev = get_single_quarter_amount(is_df, REVENUE_NAMES)
+        q_op_income_t, q_op_income_prev = get_single_quarter_amount(is_df, OP_INCOME_NAMES)
 
         # F-Score의 "전기" 비교 기준: 직전 사업연도 전체 (한 해 전 TTM에 대한 근사)
         revenue_prev = get_amount(is_annual, REVENUE_NAMES, current=True)
@@ -716,6 +802,31 @@ def compute_raw_metrics(dart, ticker, as_of, marcap, max_report_attempts=4, incl
         "F_Score": scores,
         "기준보고서": _report_reference_date(df_current, current_year, current_code),
     }
+
+    if include_growth:
+        borrowings_t = _total_borrowings(bs)
+        cash_t = get_amount(bs, CASH_NAMES, current=True)
+        invested_capital = borrowings_t + total_equity_t - cash_t
+        # 실효세율 = 법인세비용 / 세전이익. 결손·세액공제 등으로 왜곡되는 경우가 흔해
+        # 0~35% 범위를 벗어나면 법정세율(22%)로 대체한다.
+        eff_tax_rate = (tax_t / pretax_t) if pretax_t else None
+        if eff_tax_rate is None or not (0 <= eff_tax_rate <= 0.35):
+            eff_tax_rate = 0.22
+        nopat = op_income_t * (1 - eff_tax_rate)
+        roic = (nopat / invested_capital * 100) if invested_capital > 0 else None
+
+        revenue_yoy_q = (
+            (q_revenue_t - q_revenue_prev) / q_revenue_prev * 100
+            if q_revenue_prev not in (None, 0) else None
+        )
+        op_income_yoy_q = (
+            (q_op_income_t - q_op_income_prev) / q_op_income_prev * 100
+            if q_op_income_prev not in (None, 0) else None
+        )
+
+        result["ROIC(%)"] = round(roic, 2) if roic is not None else None
+        result["매출액_최근분기YoY(%)"] = round(revenue_yoy_q, 2) if revenue_yoy_q is not None else None
+        result["영업이익_최근분기YoY(%)"] = round(op_income_yoy_q, 2) if op_income_yoy_q is not None else None
 
     if include_trend:
         # 과거 최대 3개 사업연도 + 현재 TTM
@@ -932,6 +1043,75 @@ def run_pipeline_from_cache(criteria):
     ] + financials_5y_cols + industry_avg_cols]
 
     return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
+
+
+def run_growth_pipeline_from_cache(criteria):
+    """
+    run_pipeline_from_cache()와 같은 data/screening_cache.csv를 읽어 성장주 기준
+    (매출/영업이익 CAGR·최근분기 YoY, Trailing PEG, ROE/ROIC, 부채비율/이자보상배율)으로
+    걸러낸다. 매출·영업이익 CAGR은 저장된 5년치 배열에서 최근 3개 연도로 그 자리에서
+    계산하고, PEG는 PER(TTM) ÷ 영업이익 3개년 CAGR(%)로 근사한다(Forward 컨센서스 없음).
+    """
+    if not CACHE_CSV.exists():
+        raise FileNotFoundError(
+            "캐시 파일이 없습니다. 로컬 환경에서 `python batch.py`를 실행해 "
+            "data/screening_cache.csv를 만든 뒤 커밋/푸시하세요."
+        )
+    df = pd.read_csv(CACHE_CSV, dtype={"종목코드": str})
+
+    if "시장구분" not in df.columns:
+        df["시장구분"] = "전체"
+
+    financials_5y_cols = ["매출액_5y", "영업이익_5y", "부채비율_5y", "이자보상배율_5y"]
+    growth_extra_cols = ["ROIC(%)", "매출액_최근분기YoY(%)", "영업이익_최근분기YoY(%)"]
+    for col in financials_5y_cols:
+        if col not in df.columns:
+            df[col] = "[]"
+        df[col] = df[col].fillna("[]").apply(json.loads)
+    for col in growth_extra_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    df["매출액_3개년CAGR(%)"] = df["매출액_5y"].apply(lambda v: compute_cagr(v[-3:]))
+    df["영업이익_3개년CAGR(%)"] = df["영업이익_5y"].apply(lambda v: compute_cagr(v[-3:]))
+    df["부채비율(%)"] = df["부채비율_5y"].apply(lambda v: v[-1] if v else None)
+    df["이자보상배율"] = df["이자보상배율_5y"].apply(lambda v: v[-1] if v else None)
+    df["PEG"] = df.apply(
+        lambda r: round(r["PER"] / r["영업이익_3개년CAGR(%)"], 2)
+        if r["PER"] > 0 and r["영업이익_3개년CAGR(%)"] and r["영업이익_3개년CAGR(%)"] > 0
+        else None,
+        axis=1,
+    )
+
+    def _ge(series, threshold):
+        return series.notna() & (series >= threshold)
+
+    cond = (
+        _ge(df["매출액_3개년CAGR(%)"], criteria["MIN_REVENUE_CAGR_3Y"])
+        & _ge(df["매출액_최근분기YoY(%)"], criteria["MIN_REVENUE_YOY_Q"])
+        & _ge(df["영업이익_3개년CAGR(%)"], criteria["MIN_OP_INCOME_CAGR_3Y"])
+        & _ge(df["영업이익_최근분기YoY(%)"], criteria["MIN_OP_INCOME_YOY_Q"])
+        & df["PEG"].notna() & (df["PEG"] > 0) & (df["PEG"] <= criteria["MAX_PEG"])
+        & _ge(df["ROE(%)"], criteria["MIN_ROE"])
+        & _ge(df["ROIC(%)"], criteria["MIN_ROIC"])
+        & df["부채비율(%)"].notna() & (df["부채비율(%)"] <= criteria["MAX_DEBT_RATIO"])
+        & _ge(df["이자보상배율"], criteria["MIN_INTEREST_COVERAGE"])
+    )
+    market = criteria.get("MARKET", "전체")
+    if market != "전체":
+        cond &= df["시장구분"] == market
+
+    df_pass = df[cond].copy()
+    df_pass["시가총액(억)"] = (df_pass["시가총액"] / 100_000_000).round().astype(int)
+
+    df_final = df_pass.rename(columns={"F_Score": "F-Score"})[[
+        "종목코드", "종목명", "시장구분", "시가총액(억)", "PER", "PEG",
+        "매출액_3개년CAGR(%)", "매출액_최근분기YoY(%)",
+        "영업이익_3개년CAGR(%)", "영업이익_최근분기YoY(%)",
+        "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율", "F-Score", "기준보고서",
+    ]]
+
+    return df_final.sort_values(by="PEG", ascending=True)
 
 
 def compute_priority_scores(df, weights=None):

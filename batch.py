@@ -17,9 +17,10 @@ DART 재무제표는 분기 단위로만 갱신되므로 매일 돌릴 필요는
 
 코스피·코스닥 상장 전 종목(PER 계산이 가능한, 즉 흑자인 종목)을 대상으로 하며, 종목당
 OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)와 최근 5개 사업연도의
-매출액/경상이익/경상이익률/영업·투자·재무활동현금흐름/잉여현금흐름, 기업분석 체크리스트
-지표(부채비율/당좌비율/이자보상배율/유보율/매출성장률/매출채권회전율/재고자산회전율)도
-함께 수집한다 - 그만큼 DART 조회가 늘어나 종목 수 기준 실행 시간이 길어진다
+매출액/영업이익/경상이익/경상이익률/영업·투자·재무활동현금흐름/잉여현금흐름, 기업분석
+체크리스트 지표(부채비율/당좌비율/이자보상배율/유보율/매출성장률/매출채권회전율/
+재고자산회전율), 성장주 스크리닝용 ROIC(%)·최근 분기 매출/영업이익 YoY(%)도 함께
+수집한다 - 그만큼 DART 조회가 늘어나 종목 수 기준 실행 시간이 길어진다
 (수천 종목 기준 1시간 이상 소요 가능).
 
 ECOS_API_KEY가 있으면 한국은행 ECOS(경제통계시스템)에서 업종별 매출채권회전율·재고자산회전율
@@ -78,7 +79,7 @@ def run_batch(dart_api_key, ecos_api_key=None, log=print):
         per = df_candidates.loc[ticker, "PER"]  # Naver PER (1차 필터에서 이미 수집됨)
         avg_trd = df_candidates.loc[ticker, "20D_Avg_Trading_Val"]
 
-        metrics = compute_raw_metrics(dart, ticker, as_of, marcap, include_trend=True)
+        metrics = compute_raw_metrics(dart, ticker, as_of, marcap, include_trend=True, include_growth=True)
         if metrics is not None:
             fin5y = compute_5y_financials(dart, ticker, as_of) or {}
 
@@ -110,6 +111,7 @@ def run_batch(dart_api_key, ecos_api_key=None, log=print):
                 "PER_trend": json.dumps(metrics["PER_trend"]),
                 "연도_5y": json.dumps(fin5y.get("연도", [])),
                 "매출액_5y": json.dumps(fin5y.get("매출액", [])),
+                "영업이익_5y": json.dumps(fin5y.get("영업이익", [])),
                 "경상이익_5y": json.dumps(fin5y.get("경상이익", [])),
                 "경상이익률_5y": json.dumps(fin5y.get("경상이익률(%)", [])),
                 "CFO_5y": json.dumps(fin5y.get("영업활동현금흐름", [])),
@@ -127,6 +129,9 @@ def run_batch(dart_api_key, ecos_api_key=None, log=print):
                 "업종매칭명": (industry_avg or {}).get("업종명", ""),
                 "매출채권회전율_업계평균": (industry_avg or {}).get("매출채권회전율"),
                 "재고자산회전율_업계평균": (industry_avg or {}).get("재고자산회전율"),
+                "ROIC(%)": metrics.get("ROIC(%)"),
+                "매출액_최근분기YoY(%)": metrics.get("매출액_최근분기YoY(%)"),
+                "영업이익_최근분기YoY(%)": metrics.get("영업이익_최근분기YoY(%)"),
             })
         if (i + 1) % 10 == 0 or (i + 1) == total:
             log(f"  진행: {i + 1}/{total}")
