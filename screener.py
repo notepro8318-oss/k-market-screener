@@ -72,6 +72,7 @@ GROWTH_DEFAULT_FILTER_CRITERIA = {
     "MIN_ROIC": 12.0,                        # ROIC 12% 이상
     "MAX_DEBT_RATIO": 100.0,                 # 부채비율 100% 이하
     "MIN_INTEREST_COVERAGE": 5.0,            # 이자보상배율 5배 이상
+    "APPLY_RND_FILTER": False,               # True면 매출 대비 R&D 비율(업종별 기준) 조건도 적용
 }
 
 
@@ -479,6 +480,55 @@ def _report_reference_date(df, year, code):
     return f"{year}-{m:02d}-{d:02d}"
 
 
+# 사업보고서 "II. 사업의 내용" 중 연구개발활동 섹션 표에는 회사가 이미 계산해둔
+# "연구개발비 / 매출액 비율(%)"이 최근 3개 사업연도치로 그대로 들어있어, 직접 계산할 필요 없이
+# 그 값만 찾아 파싱하면 된다. 다만 섹션 제목/표 서식은 회사마다 다소 다를 수 있어(공백 유무 등)
+# 정규식은 여유 있게 잡고, 못 찾으면(R&D 자체가 없는 금융업·지주사 등 포함) None을 반환한다.
+_RND_RATIO_LABEL_RE = re.compile(r"연구개발비\s*/?\s*매출액\s*비율")
+_PERCENT_CELL_RE = re.compile(r">\s*(-?[\d,]+(?:\.\d+)?)\s*%\s*<")
+
+
+def fetch_rnd_ratio(dart, rcept_no):
+    """
+    사업보고서 원문(dart.document, 종목당 수 MB)에서 "연구개발비 / 매출액 비율" 표를 찾아
+    가장 최근 사업연도의 비율(%)을 반환한다. 원문 전체를 내려받는 무거운 호출이라 배치에서
+    종목당 1회(가장 최근 사업보고서 1건)만 호출하도록 호출부에서 관리해야 한다.
+    """
+    try:
+        doc = dart.document(rcept_no)
+    except Exception:
+        return None
+    m = _RND_RATIO_LABEL_RE.search(doc)
+    if not m:
+        return None
+    window = doc[m.end():m.end() + 1500]
+    cells = _PERCENT_CELL_RE.findall(window)
+    if not cells:
+        return None
+    try:
+        return float(cells[0].replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _rnd_min_threshold(induty_code):
+    """
+    R&D 비율 최소 기준(%): 첨단IT(전자부품·통신장비 제조 C26, 소프트웨어·IT서비스 J58/62/63)는
+    10%, 그 외 제조업(소부장 포함, KSIC 대분류 C 10~34)은 5%. 제조업이 아닌 업종(금융·유통·
+    건설·서비스 등)은 R&D 지표 자체가 무의미해 None(검사 제외 대상)을 반환한다.
+    """
+    code = str(induty_code).strip()
+    if not code:
+        return None
+    if code.startswith(("26", "58", "62", "63")):
+        return 10.0
+    try:
+        section_num = int(code[:2])
+    except ValueError:
+        return None
+    return 5.0 if 10 <= section_num <= 34 else None
+
+
 def _annual_year_metrics(df):
     """사업보고서 하나에서 당기(thstrm)·전기(frmtrm) 두 사업연도의 원본 재무값을 추출."""
     bs = df[df["sj_div"] == "BS"]
@@ -581,12 +631,15 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
     base_year = as_of.year - 1 if as_of >= pd.Timestamp(as_of.year, 3, 31) else as_of.year - 2
 
     year_data = {}
+    latest_rcept_no = None
     probe_year = base_year
     attempts = 0
     max_attempts = years + 2  # 격년 조회 실패 시 재시도 여유
     while len(year_data) < years and attempts < max_attempts:
         df_annual = _fetch_report(dart, ticker, probe_year, "11011")
         if df_annual is not None:
+            if latest_rcept_no is None:  # probe_year가 감소하는 순서이므로 첫 성공이 가장 최근 사업보고서
+                latest_rcept_no = str(df_annual.iloc[0]["rcept_no"])
             cur, prev = _annual_year_financials(df_annual)
             year_data.setdefault(probe_year, cur)
             year_data.setdefault(probe_year - 1, prev)
@@ -641,6 +694,8 @@ def compute_5y_financials(dart, ticker, as_of, years=5):
 
         avg_inventory = (inventory + prev_v["inventory"]) / 2 if prev_v else inventory
         out["재고자산회전율"].append(round(cogs / avg_inventory, 2) if avg_inventory else 0.0)
+
+    out["최신_rcept_no"] = latest_rcept_no  # R&D 비율 파싱(fetch_rnd_ratio)이 원문을 찾는 데 사용
     return out
 
 
@@ -1063,7 +1118,10 @@ def run_growth_pipeline_from_cache(criteria):
         df["시장구분"] = "전체"
 
     financials_5y_cols = ["매출액_5y", "영업이익_5y", "부채비율_5y", "이자보상배율_5y"]
-    growth_extra_cols = ["ROIC(%)", "매출액_최근분기YoY(%)", "영업이익_최근분기YoY(%)"]
+    growth_extra_cols = [
+        "ROIC(%)", "매출액_최근분기YoY(%)", "영업이익_최근분기YoY(%)",
+        "연구개발비율(%)", "R&D최소기준(%)",
+    ]
     for col in financials_5y_cols:
         if col not in df.columns:
             df[col] = "[]"
@@ -1086,6 +1144,12 @@ def run_growth_pipeline_from_cache(criteria):
     def _ge(series, threshold):
         return series.notna() & (series >= threshold)
 
+    # R&D 비율: 업종 자체가 해당 없음(R&D최소기준 결측)이면 조건 없이 통과, 업종은 해당되는데
+    # 비율 파싱에 실패했으면(결측) 기준을 확인할 수 없으므로 미통과 처리.
+    rnd_ok = df["R&D최소기준(%)"].isna() | (
+        df["연구개발비율(%)"].notna() & (df["연구개발비율(%)"] >= df["R&D최소기준(%)"])
+    )
+
     cond = (
         _ge(df["매출액_3개년CAGR(%)"], criteria["MIN_REVENUE_CAGR_3Y"])
         & _ge(df["매출액_최근분기YoY(%)"], criteria["MIN_REVENUE_YOY_Q"])
@@ -1097,6 +1161,8 @@ def run_growth_pipeline_from_cache(criteria):
         & df["부채비율(%)"].notna() & (df["부채비율(%)"] <= criteria["MAX_DEBT_RATIO"])
         & _ge(df["이자보상배율"], criteria["MIN_INTEREST_COVERAGE"])
     )
+    if criteria.get("APPLY_RND_FILTER"):
+        cond &= rnd_ok
     market = criteria.get("MARKET", "전체")
     if market != "전체":
         cond &= df["시장구분"] == market
@@ -1108,7 +1174,8 @@ def run_growth_pipeline_from_cache(criteria):
         "종목코드", "종목명", "시장구분", "시가총액(억)", "PER", "PEG",
         "매출액_3개년CAGR(%)", "매출액_최근분기YoY(%)",
         "영업이익_3개년CAGR(%)", "영업이익_최근분기YoY(%)",
-        "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율", "F-Score", "기준보고서",
+        "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율",
+        "연구개발비율(%)", "R&D최소기준(%)", "F-Score", "기준보고서",
     ]]
 
     return df_final.sort_values(by="PEG", ascending=True)

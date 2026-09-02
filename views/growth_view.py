@@ -25,7 +25,7 @@ st.caption(
 )
 st.info(
     "Forward PEG는 애널리스트 컨센서스가 없어 대신 **Trailing PEG**(PER ÷ 영업이익 3개년 CAGR)로 "
-    "근사합니다. R&D 비율 지표는 DART 공시 서식 조사 후 추가 예정입니다.",
+    "근사합니다.",
     icon="ℹ️",
 )
 
@@ -78,6 +78,15 @@ with st.sidebar:
         value=GROWTH_DEFAULT_FILTER_CRITERIA["MIN_INTEREST_COVERAGE"], step=0.5,
     )
 
+    st.caption("기술 선도력")
+    apply_rnd_filter = st.checkbox(
+        "R&D 비율 조건 적용 (제조업 5% / 첨단IT 10% 이상)",
+        value=GROWTH_DEFAULT_FILTER_CRITERIA["APPLY_RND_FILTER"],
+        help="DART 사업보고서 원문에서 파싱한 값이라 회사별 서식 차이로 일부 종목은 값을 못 가져올 "
+        "수 있습니다. 체크하면 그런 종목은 조건 미달로 제외됩니다. 값 자체는 체크 여부와 무관하게 "
+        "결과 표에 항상 표시됩니다.",
+    )
+
     criteria = {
         "MARKET": market,
         "MIN_REVENUE_CAGR_3Y": min_revenue_cagr,
@@ -89,6 +98,7 @@ with st.sidebar:
         "MIN_ROIC": min_roic,
         "MAX_DEBT_RATIO": max_debt_ratio,
         "MIN_INTEREST_COVERAGE": min_interest_coverage,
+        "APPLY_RND_FILTER": apply_rnd_filter,
     }
 
     run_clicked = st.button("🔍 스크리닝 실행", type="primary", use_container_width=True, key="growth_run")
@@ -126,7 +136,8 @@ else:
             "종목코드", "종목명", "시장구분", "시가총액(억)", "PER", "PEG",
             "매출액_3개년CAGR(%)", "매출액_최근분기YoY(%)",
             "영업이익_3개년CAGR(%)", "영업이익_최근분기YoY(%)",
-            "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율", "F-Score", "기준보고서",
+            "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율",
+            "연구개발비율(%)", "R&D최소기준(%)", "F-Score", "기준보고서",
         ],
         column_config={
             "종목코드": st.column_config.TextColumn(
@@ -174,6 +185,15 @@ else:
             ),
             "이자보상배율": st.column_config.NumberColumn(
                 "이자보상배율", help="영업이익 ÷ 이자비용 (가장 최근 확정 사업연도 기준). 높을수록 이자 지급 여력이 큼",
+            ),
+            "연구개발비율(%)": st.column_config.NumberColumn(
+                "R&D비율(%)",
+                help="매출액 대비 연구개발비 비율 (DART 사업보고서 원문 파싱, 가장 최근 확정 사업연도). "
+                "제조업·첨단IT가 아닌 업종이거나 원문에서 값을 못 찾으면 비어 있습니다",
+            ),
+            "R&D최소기준(%)": st.column_config.NumberColumn(
+                "R&D기준(%)",
+                help="업종별 통과 기준 (KSIC 기준 제조업 5%, 첨단IT 10%). 해당 없는 업종(금융·유통·서비스 등)은 비어 있습니다",
             ),
             "F-Score": st.column_config.NumberColumn(
                 "F-Score", help="Piotroski F-Score (0~9점). 참고용 — 성장주 필터링 기준에는 포함되지 않음",

@@ -23,6 +23,10 @@ OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)와 �
 수집한다 - 그만큼 DART 조회가 늘어나 종목 수 기준 실행 시간이 길어진다
 (수천 종목 기준 1시간 이상 소요 가능).
 
+제조업·첨단IT 업종(KSIC 기준)에 한해 매출 대비 R&D 비율도 사업보고서 원문에서 파싱해
+수집한다. 이 조회는 종목당 수 MB짜리 원문 전체를 내려받는 무거운 호출이라, 적용 대상이
+아닌 업종(금융·유통·서비스 등)은 애초에 호출하지 않도록 걸러 실행 시간을 아낀다.
+
 ECOS_API_KEY가 있으면 한국은행 ECOS(경제통계시스템)에서 업종별 매출채권회전율·재고자산회전율
 평균(통계표 501Y008)도 한 번만 받아와서, 종목별 업종코드(DART company API)에 매칭해 함께
 저장한다 - "동종업계 대비" 판정의 기준값으로 쓰인다.
@@ -41,10 +45,12 @@ from screener import (
     CACHE_CSV,
     CACHE_META,
     DATA_DIR,
+    _rnd_min_threshold,
     compute_5y_financials,
     compute_raw_metrics,
     create_dart_client,
     fetch_ecos_industry_turnover,
+    fetch_rnd_ratio,
     match_industry_turnover,
     run_first_stage_screening,
 )
@@ -83,11 +89,22 @@ def run_batch(dart_api_key, ecos_api_key=None, log=print):
         if metrics is not None:
             fin5y = compute_5y_financials(dart, ticker, as_of) or {}
 
+            try:
+                induty_code = dart.company(ticker).get("induty_code")
+            except Exception:
+                induty_code = None
+
             industry_avg, industry_ecos_code = None, None
-            if ecos_lookup:
+            if ecos_lookup and induty_code:
+                industry_avg, industry_ecos_code = match_industry_turnover(induty_code, ecos_lookup)
+
+            # R&D 비율(원문 문서 파싱, 종목당 수 MB)은 기준 자체가 있는 업종(제조업·첨단IT)만
+            # 무거운 document() 호출을 하도록 걸러서 나머지 업종의 배치 시간을 아낀다.
+            rnd_threshold = _rnd_min_threshold(induty_code) if induty_code else None
+            rnd_ratio = None
+            if rnd_threshold is not None and fin5y.get("최신_rcept_no"):
                 try:
-                    induty_code = dart.company(ticker).get("induty_code")
-                    industry_avg, industry_ecos_code = match_industry_turnover(induty_code, ecos_lookup)
+                    rnd_ratio = fetch_rnd_ratio(dart, fin5y["최신_rcept_no"])
                 except Exception:
                     pass
 
@@ -132,6 +149,8 @@ def run_batch(dart_api_key, ecos_api_key=None, log=print):
                 "ROIC(%)": metrics.get("ROIC(%)"),
                 "매출액_최근분기YoY(%)": metrics.get("매출액_최근분기YoY(%)"),
                 "영업이익_최근분기YoY(%)": metrics.get("영업이익_최근분기YoY(%)"),
+                "연구개발비율(%)": rnd_ratio,
+                "R&D최소기준(%)": rnd_threshold,
             })
         if (i + 1) % 10 == 0 or (i + 1) == total:
             log(f"  진행: {i + 1}/{total}")
