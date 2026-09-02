@@ -9,6 +9,7 @@ data/screening_cache.csv에 저장해두고, Streamlit 앱(views/screener_view.p
 
 사용법:
     export DART_API_KEY="발급받은_키"   # PowerShell: $env:DART_API_KEY = "발급받은_키"
+    export ECOS_API_KEY="발급받은_키"   # 선택: 없으면 업종 평균 회전율 없이 나머지는 그대로 수집
     python batch.py
 
 DART 재무제표는 분기 단위로만 갱신되므로 매일 돌릴 필요는 없고, 새 분기/반기/사업보고서가
@@ -20,6 +21,10 @@ OPM/ROA/ROE/PBR/PER의 과거 추세(최근 3개 사업연도 + 현재 TTM)와 �
 지표(부채비율/당좌비율/이자보상배율/유보율/매출성장률/매출채권회전율/재고자산회전율)도
 함께 수집한다 - 그만큼 DART 조회가 늘어나 종목 수 기준 실행 시간이 길어진다
 (수천 종목 기준 1시간 이상 소요 가능).
+
+ECOS_API_KEY가 있으면 한국은행 ECOS(경제통계시스템)에서 업종별 매출채권회전율·재고자산회전율
+평균(통계표 501Y008)도 한 번만 받아와서, 종목별 업종코드(DART company API)에 매칭해 함께
+저장한다 - "동종업계 대비" 판정의 기준값으로 쓰인다.
 """
 
 import datetime
@@ -38,18 +43,29 @@ from screener import (
     compute_5y_financials,
     compute_raw_metrics,
     create_dart_client,
+    fetch_ecos_industry_turnover,
+    match_industry_turnover,
     run_first_stage_screening,
 )
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-def run_batch(dart_api_key, log=print):
+def run_batch(dart_api_key, ecos_api_key=None, log=print):
     DATA_DIR.mkdir(exist_ok=True)
     as_of = pd.Timestamp.today()
 
     dart = create_dart_client(dart_api_key, log=log)
     df_candidates = run_first_stage_screening(BROAD_CACHE_CRITERIA, log=log)
+
+    ecos_lookup = {}
+    if ecos_api_key:
+        try:
+            ecos_lookup, _ = fetch_ecos_industry_turnover(ecos_api_key, log=log)
+        except Exception as e:
+            log(f"⚠ ECOS 업종 평균 회전율 조회 실패({e.__class__.__name__}) - 해당 항목 없이 진행합니다.")
+    else:
+        log("ℹ ECOS_API_KEY가 없어 업종 평균 회전율(동종업계 대비) 없이 진행합니다.")
 
     rows = []
     total = len(df_candidates)
@@ -65,6 +81,15 @@ def run_batch(dart_api_key, log=print):
         metrics = compute_raw_metrics(dart, ticker, as_of, marcap, include_trend=True)
         if metrics is not None:
             fin5y = compute_5y_financials(dart, ticker, as_of) or {}
+
+            industry_avg, industry_ecos_code = None, None
+            if ecos_lookup:
+                try:
+                    induty_code = dart.company(ticker).get("induty_code")
+                    industry_avg, industry_ecos_code = match_industry_turnover(induty_code, ecos_lookup)
+                except Exception:
+                    pass
+
             rows.append({
                 "종목코드": ticker,
                 "종목명": name,
@@ -98,6 +123,10 @@ def run_batch(dart_api_key, log=print):
                 "매출성장률_5y": json.dumps(fin5y.get("매출성장률(%)", [])),
                 "매출채권회전율_5y": json.dumps(fin5y.get("매출채권회전율", [])),
                 "재고자산회전율_5y": json.dumps(fin5y.get("재고자산회전율", [])),
+                "업종매칭_ECOS코드": industry_ecos_code or "",
+                "업종매칭명": (industry_avg or {}).get("업종명", ""),
+                "매출채권회전율_업계평균": (industry_avg or {}).get("매출채권회전율"),
+                "재고자산회전율_업계평균": (industry_avg or {}).get("재고자산회전율"),
             })
         if (i + 1) % 10 == 0 or (i + 1) == total:
             log(f"  진행: {i + 1}/{total}")
@@ -119,8 +148,9 @@ def run_batch(dart_api_key, log=print):
 
 if __name__ == "__main__":
     key = os.environ.get("DART_API_KEY", "")
+    ecos_key = os.environ.get("ECOS_API_KEY", "")
     if not key:
         print("DART_API_KEY 환경 변수가 설정되지 않았습니다.")
         print("https://opendart.fss.or.kr 에서 발급받은 키를 환경 변수로 설정한 뒤 다시 실행하세요.")
     else:
-        run_batch(key)
+        run_batch(key, ecos_api_key=ecos_key)

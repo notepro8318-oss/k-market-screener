@@ -76,6 +76,97 @@ def create_dart_client(dart_api_key, retries=4, delay=5, log=print):
     raise last_err
 
 
+# ==========================================
+# 업종 평균 회전율 (한국은행 ECOS API, 통계표 501Y008 "자산/자본 회전율")
+# 매출채권회전율(808)·재고자산회전율(806) 항목을 기업분석 체크리스트의 "동종업계 대비" 기준으로 쓴다.
+# ==========================================
+_KSIC_SECTION_RANGES = [
+    (1, 3, "A"), (5, 8, "B"), (10, 34, "C"), (35, 35, "D"), (36, 39, "E"),
+    (41, 42, "F"), (45, 47, "G"), (49, 52, "H"), (55, 56, "I"), (58, 63, "J"),
+    (64, 66, "K"), (68, 68, "L"), (69, 73, "M"), (74, 76, "N"), (84, 84, "O"),
+    (85, 85, "P"), (86, 87, "Q"), (90, 91, "R"), (94, 96, "S"), (97, 98, "T"), (99, 99, "U"),
+]
+
+
+def _ksic_section_letter(induty_code):
+    """DART 업종코드(숫자 앞 2자리)로 KSIC 대분류 알파벳을 찾는다."""
+    try:
+        num2 = int(str(induty_code)[:2])
+    except (ValueError, TypeError):
+        return None
+    for lo, hi, letter in _KSIC_SECTION_RANGES:
+        if lo <= num2 <= hi:
+            return letter
+    return None
+
+
+def fetch_ecos_industry_turnover(ecos_api_key, log=print):
+    """
+    ECOS 통계표 501Y008(자산/자본 회전율, 제11차 한국표준산업분류, 기업규모=종합)에서
+    업종별 매출채권회전율(808)·재고자산회전율(806)을 가져온다.
+
+    업종코드 파라미터를 비우면 전체 업종을 한 번에 내려주므로, 항목당 1회(총 2회) 호출로
+    끝난다 - 종목마다 호출할 필요가 없어 배치 실행 시작 시 딱 한 번만 부르면 된다.
+    데이터가 연 1회(전년도 기준) 갱신되므로 최신 연도부터 거슬러 올라가며 값이 있는 연도를 찾는다.
+    """
+    base = "https://ecos.bok.or.kr/api/StatisticSearch"
+    items = {"808": "매출채권회전율", "806": "재고자산회전율"}
+    today_year = pd.Timestamp.today().year
+
+    result = {}
+    used_year = None
+    for item_code, item_name in items.items():
+        rows = None
+        for yr in range(today_year - 1, today_year - 4, -1):
+            url = f"{base}/{ecos_api_key}/json/kr/1/500/501Y008/A/{yr}/{yr}//A/{item_code}/"
+            try:
+                resp = requests.get(url, timeout=15)
+                data = resp.json()
+            except Exception:
+                continue
+            candidate_rows = data.get("StatisticSearch", {}).get("row")
+            if candidate_rows:
+                rows = candidate_rows
+                used_year = yr
+                break
+        if not rows:
+            log(f"⚠ ECOS {item_name}({item_code}) 데이터를 가져오지 못했습니다.")
+            continue
+        for row in rows:
+            code = row["ITEM_CODE1"]
+            result.setdefault(code, {"업종명": row["ITEM_NAME1"]})[item_name] = clean_num(row["DATA_VALUE"])
+
+    if result:
+        log(f"✔ ECOS 업종별 회전율 {len(result)}개 업종 수집 완료 (기준연도 {used_year})")
+    return result, used_year
+
+
+def match_industry_turnover(induty_code, ecos_lookup):
+    """
+    DART 업종코드(induty_code)에 대응하는 ECOS 업종 평균을 세분류 -> 자리수를 줄여가며(대분류
+    방향) -> 대분류 알파벳 -> 전산업(ZZZ00) 순으로 점점 넓혀가며 찾는다.
+    ECOS는 세부 업종 몇 개를 묶어 하나의 코드(예: C104 = C101~C104)로 제공하는 경우가 많은데,
+    자리수를 하나씩 줄이며 시도하면 별도의 매핑 테이블 없이도 자연스럽게 그 상위 묶음에 걸린다.
+
+    반환값: (업종 평균 dict 또는 None, 실제 매칭된 ECOS 업종코드 또는 None)
+    """
+    if not ecos_lookup:
+        return None, None
+    letter = _ksic_section_letter(induty_code)
+    code = str(induty_code).strip()
+    candidates = []
+    if letter:
+        for length in range(len(code), 0, -1):
+            candidates.append(f"{letter}{code[:length]}")
+        candidates.append(letter)
+    candidates.append("ZZZ00")
+
+    for c in candidates:
+        if c in ecos_lookup:
+            return ecos_lookup[c], c
+    return None, None
+
+
 def _fetch_naver_per_table(sosok):
     """Naver 시가총액 페이지에서 종목코드별 PER을 스크래핑 (로그인 불필요)."""
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -809,6 +900,13 @@ def run_pipeline_from_cache(criteria):
             df[col] = "[]"  # 구버전 캐시(해당 컬럼 미포함) 호환
         df[col] = df[col].fillna("[]").apply(json.loads)
 
+    industry_avg_cols = [
+        "업종매칭_ECOS코드", "업종매칭명", "매출채권회전율_업계평균", "재고자산회전율_업계평균",
+    ]
+    for col in industry_avg_cols:
+        if col not in df.columns:
+            df[col] = None  # 구버전 캐시(ECOS 업종 평균 미포함) 호환
+
     market = criteria.get("MARKET", "전체")
     cond = (
         (df["시가총액"] >= criteria["MIN_MARCAP"])
@@ -831,7 +929,7 @@ def run_pipeline_from_cache(criteria):
         "PER", "PER_trend", "PBR", "PBR_trend",
         "영업이익률(%)", "OPM_trend", "ROA(%)", "ROA_trend", "ROE(%)", "ROE_trend",
         "F-Score", "기준보고서",
-    ] + financials_5y_cols]
+    ] + financials_5y_cols + industry_avg_cols]
 
     return df_final.sort_values(by=["F-Score", "PER"], ascending=[False, True])
 

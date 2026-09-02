@@ -314,6 +314,14 @@ else:
                 revenue_growth = _last("매출성장률_5y")
                 receivables_turnover = _last("매출채권회전율_5y")
                 inventory_turnover = _last("재고자산회전율_5y")
+                def _none_if_missing(val):
+                    if val is None or (isinstance(val, float) and pd.isna(val)) or val == "":
+                        return None
+                    return val
+
+                industry_name = _none_if_missing(picked_row.get("업종매칭명"))
+                receivables_industry_avg = _none_if_missing(picked_row.get("매출채권회전율_업계평균"))
+                inventory_industry_avg = _none_if_missing(picked_row.get("재고자산회전율_업계평균"))
                 fcf_latest = _last("FCF_5y")
                 fcf_latest_eok = round(fcf_latest / 100_000_000, 1) if fcf_latest is not None else None
                 opm_ttm = picked_row["영업이익률(%)"]
@@ -344,12 +352,20 @@ else:
                     ("성장성", "매출 성장률", revenue_growth, "%", "5~10% 이상",
                      revenue_growth is not None and revenue_growth >= 5,
                      "물가 상승률보다 매출이 안 오르면 사실상 역성장"),
-                    ("성장성", "매출채권회전율", receivables_turnover, "회", "동종업계 대비 높을수록 좋음",
-                     None,
-                     "낮으면 물건은 팔았는데 돈을 못 받고(외상) 있다는 경고 신호"),
-                    ("성장성", "재고자산회전율", inventory_turnover, "회", "동종업계 대비 높을수록 좋음",
-                     None,
-                     "하락 + 재고 급증 = 악성 재고 신호 (반도체·의류 등 필수 확인)"),
+                    ("성장성", "매출채권회전율", receivables_turnover, "회",
+                     f"업종평균({industry_name}) {receivables_industry_avg:,.2f}회 이상"
+                     if receivables_industry_avg is not None else "동종업계 대비 높을수록 좋음 (업종 평균 데이터 없음)",
+                     None if not receivables_industry_avg or not receivables_turnover
+                     else receivables_turnover >= receivables_industry_avg,
+                     "낮으면 물건은 팔았는데 돈을 못 받고(외상) 있다는 경고 신호. "
+                     "업종 평균은 한국은행 기업경영분석(ECOS) 기준"),
+                    ("성장성", "재고자산회전율", inventory_turnover, "회",
+                     f"업종평균({industry_name}) {inventory_industry_avg:,.2f}회 이상"
+                     if inventory_industry_avg is not None else "동종업계 대비 높을수록 좋음 (업종 평균 데이터 없음)",
+                     None if not inventory_industry_avg or not inventory_turnover
+                     else inventory_turnover >= inventory_industry_avg,
+                     "하락 + 재고 급증 = 악성 재고 신호 (반도체·의류 등 필수 확인). "
+                     "업종 평균은 한국은행 기업경영분석(ECOS) 기준"),
                 ]
                 checklist_df = pd.DataFrame([
                     {
