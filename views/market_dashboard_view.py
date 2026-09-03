@@ -97,8 +97,11 @@ with cache_meta_col:
 
 left, right = st.columns([1, 2.3], gap="medium")
 
+ROW1_HEIGHT = 360  # 1열(카드 4개) 높이 = 좌측 "종합 판정" 박스 기준
+ROW2_HEIGHT = 300  # 2열(카드 3개) 높이 = 좌측 "최근 1년 지수 추이" 박스 기준
+
 with left:
-    with st.container(border=True):
+    with st.container(border=True, height=ROW1_HEIGHT):
         st.markdown("**종합 판정**")
         st.plotly_chart(
             _gauge(
@@ -116,7 +119,7 @@ with left:
             st.caption(f"➖ 데이터 없음 {summary['데이터없음_개수']}개는 판정에서 제외")
 
     kospi_hist, kosdaq_hist = _cached_trend()
-    with st.container(border=True):
+    with st.container(border=True, height=ROW2_HEIGHT):
         st.markdown("**최근 1년 지수 추이**")
         if kospi_hist is not None:
             st.caption("코스피")
@@ -128,11 +131,11 @@ with left:
                              config={"displayModeBar": False}, key="kosdaq_spark")
 
 with right:
-    CARD_HEIGHT = 300  # 카드마다 값/기준 문구 길이가 달라도 높이를 맞추기 위한 고정값
     card_cols = st.columns(4, gap="small")
     for i, r in enumerate(rows):
+        card_height = ROW1_HEIGHT if i < 4 else ROW2_HEIGHT
         with card_cols[i % 4]:
-            with st.container(border=True, height=CARD_HEIGHT):
+            with st.container(border=True, height=card_height):
                 st.caption(r["구분"])
                 st.markdown(f"**{r['지표']}**")
                 card_val = r.get("카드값")
