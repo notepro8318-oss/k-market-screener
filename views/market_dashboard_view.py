@@ -1,6 +1,6 @@
 import streamlit as st
 
-from market_dashboard import approx_universe_pbr, build_dashboard
+from market_dashboard import build_dashboard, load_kospi_pbr_cache
 
 st.title("🚦 시장 진입 타이밍")
 st.caption("코스피·코스닥 전체 시장의 '지금이 저점권인가'를 확인하는 대시보드 — 개별 종목이 아닌 시장 전체 환경을 봅니다.")
@@ -9,33 +9,32 @@ st.info(
     icon="ℹ️",
 )
 
-st.subheader("① 코스피 PBR 입력")
-approx_pbr = approx_universe_pbr()
-if approx_pbr is not None:
-    st.caption(
-        f"참고: 자체 종목 캐시(흑자 종목만 포함) 시가총액가중평균 PBR ≈ {approx_pbr}배 "
-        "— 적자·부실주가 빠져 있어 실제 코스피 PBR보다 높게 나오는 편향이 있으니 판정에는 쓰지 않습니다."
-    )
-pbr_input = st.number_input(
-    "오늘자 코스피 선행/확정 PBR (KRX 정보데이터시스템·증권사 HTS/MTS 등에서 확인)",
-    min_value=0.0, max_value=5.0, value=st.session_state.get("market_pbr_input", 0.0), step=0.01,
-    key="market_pbr_input",
-    help="자동 수집 API가 없어 직접 입력이 필요합니다. 0.00이면 미입력으로 간주해 판정에서 제외합니다.",
+st.subheader("① 코스피 PBR")
+pbr_cached, pbr_date = load_kospi_pbr_cache()
+if pbr_cached is not None:
+    st.caption(f"indexergo.com 크롤링 캐시: {pbr_cached}배 ({pbr_date} 기준, crawl_kospi_pbr.py로 매일 자동 갱신)")
+else:
+    msg = f"크롤링 캐시가 오래됐습니다(마지막 {pbr_date}) - 직접 입력해주세요." if pbr_date \
+        else "크롤링 캐시가 아직 없습니다 - 직접 입력해주세요."
+    st.warning(msg)
+pbr_override_input = st.number_input(
+    "직접 입력으로 덮어쓰기 (선택)", min_value=0.0, max_value=5.0, value=0.0, step=0.01,
+    help="0.00으로 두면 위 크롤링 캐시 값을 그대로 사용합니다. 캐시가 없거나 오래됐을 때만 채워주세요.",
 )
-pbr_value = pbr_input if pbr_input > 0 else None
+pbr_override = pbr_override_input if pbr_override_input > 0 else None
 
 refresh = st.button("🔄 시장 데이터 새로고침", type="primary")
 
 
 @st.cache_data(ttl=1800, show_spinner="시장 데이터를 가져오는 중...")
-def _cached_dashboard(pbr):
-    return build_dashboard(pbr_input=pbr)
+def _cached_dashboard(pbr_override):
+    return build_dashboard(pbr_override=pbr_override)
 
 
 if refresh:
     _cached_dashboard.clear()
 
-rows, summary = _cached_dashboard(pbr_value)
+rows, summary = _cached_dashboard(pbr_override)
 
 st.subheader("② 판정 결과")
 verdict = summary["판정"]

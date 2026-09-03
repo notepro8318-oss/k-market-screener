@@ -13,4 +13,4 @@ venv/
 docs_cache/
 backtest_cache/
 logs/
-vkospi_cron.log
+market_data_cron.log

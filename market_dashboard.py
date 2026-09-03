@@ -6,12 +6,14 @@ FinanceDataReader(Naver·Yahoo 등 공개 소스 기반)로, CNN Fear & Greed는
 API로 가져온다. 이 소스들은 해외 IP 차단이 없어 배포 환경(Streamlit Cloud)에서도
 매번 라이브로 조회한다.
 
-VKOSPI(코스피 변동성지수)만 예외다 - investing.com에서 크롤링해야 하는데 Cloudflare
-봇 차단이 걸려 있어, DART와 같은 방식으로 로컬에서 crawl_vkospi.py를 미리 실행해
-data/vkospi_cache.json에 저장해두고 여기서는 그 캐시만 읽는다. 캐시가 오래됐거나
-없으면 사용자가 제시한 조건에 이미 명시된 대체 지표인 VIX로 자동 전환한다.
+VKOSPI(코스피 변동성지수)·코스피 PBR 둘은 예외다 - 각각 investing.com/indexergo.com을
+크롤링해야 하는데(전자는 Cloudflare 봇 차단까지 걸려 있음), DART와 같은 방식으로 로컬에서
+crawl_vkospi.py·crawl_kospi_pbr.py를 미리 실행해 data/vkospi_cache.json·
+data/kospi_pbr_cache.json에 저장해두고 여기서는 그 캐시만 읽는다. 캐시가 오래됐거나
+없으면 VKOSPI는 사용자가 제시한 조건에 이미 명시된 대체 지표인 VIX로, 코스피 PBR은
+사용자 직접 입력으로 자동 전환한다.
 
-7개 지표(코스피 PBR은 자동 수집 API가 없어 사용자가 직접 입력) 중 충족 개수에 따라:
+7개 지표(크롤링 캐시가 없을 때만 코스피 PBR을 사용자가 직접 입력) 중 충족 개수에 따라:
   - 4개 이상(PBR 충족 포함): 적극 진입
   - 3개 이상: 정상 진입
   - 2개 이하: 진입 보류
@@ -28,8 +30,11 @@ import FinanceDataReader as fdr
 from screener import DATA_DIR
 
 _DEFAULT_TIMEOUT = 15
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 VKOSPI_CACHE = DATA_DIR / "vkospi_cache.json"
 VKOSPI_URL = "https://kr.investing.com/indices/kospi-volatility"
+KOSPI_PBR_CACHE = DATA_DIR / "kospi_pbr_cache.json"
+KOSPI_PBR_URL = "https://www.indexergo.com/series/?detailId=20206&frq=D"
 
 
 def fetch_index_history(symbol, years=2):
@@ -94,26 +99,45 @@ def fetch_vkospi_investing():
         return None
 
 
-def save_vkospi_cache(value):
-    VKOSPI_CACHE.parent.mkdir(exist_ok=True)
-    VKOSPI_CACHE.write_text(
+def fetch_kospi_pbr_indexergo():
+    """
+    indexergo.com에서 코스피(전체지수, KOSPI200 아님) PBR 확정치를 가져온다. 이 사이트는
+    Cloudflare 차단이 없어 일반 requests로 충분하다(라이브로 직접 확인함). 페이지에
+    "YYYY.MM.DD 마감 기준 PBR: N.NN" 형식으로 박혀 있어 정규식으로 바로 뽑는다.
+    실패하면 (None, None) - crawl_kospi_pbr.py에서만 호출한다.
+    """
+    try:
+        r = requests.get(KOSPI_PBR_URL, headers={"User-Agent": _UA}, timeout=_DEFAULT_TIMEOUT)
+        r.raise_for_status()
+        m = re.search(r"(\d{4})\.(\d{2})\.(\d{2})\s*마감 기준 PBR:\s*(\d+\.\d+)", r.text)
+        if not m:
+            return None, None
+        y, mo, d, val = m.groups()
+        return float(val), f"{y}-{mo}-{d}"
+    except Exception:
+        return None, None
+
+
+def _save_json_cache(path, value, as_of_date=None):
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(
         json.dumps(
-            {"value": value, "date": pd.Timestamp.today().strftime("%Y-%m-%d")},
+            {"value": value, "date": as_of_date or pd.Timestamp.today().strftime("%Y-%m-%d")},
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
 
 
-def load_vkospi_cache(max_age_days=5):
+def _load_json_cache(path, max_age_days=5):
     """
     캐시가 없거나 max_age_days보다 오래됐으면 (value=None, 캐시일자)를 반환해 호출부가
-    VIX로 폴백하도록 한다. crawl_vkospi.py를 며칠 못 돌려도 대시보드가 죽지 않는다.
+    대체 지표/수동 입력으로 폴백하도록 한다. 크롤러를 며칠 못 돌려도 대시보드가 죽지 않는다.
     """
-    if not VKOSPI_CACHE.exists():
+    if not path.exists():
         return None, None
     try:
-        data = json.loads(VKOSPI_CACHE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         cached_date = pd.Timestamp(data["date"])
         age_days = (pd.Timestamp.today().normalize() - cached_date).days
         date_str = cached_date.strftime("%Y-%m-%d")
@@ -122,6 +146,22 @@ def load_vkospi_cache(max_age_days=5):
         return data["value"], date_str
     except Exception:
         return None, None
+
+
+def save_vkospi_cache(value):
+    _save_json_cache(VKOSPI_CACHE, value)
+
+
+def load_vkospi_cache(max_age_days=5):
+    return _load_json_cache(VKOSPI_CACHE, max_age_days)
+
+
+def save_kospi_pbr_cache(value, as_of_date):
+    _save_json_cache(KOSPI_PBR_CACHE, value, as_of_date)
+
+
+def load_kospi_pbr_cache(max_age_days=5):
+    return _load_json_cache(KOSPI_PBR_CACHE, max_age_days)
 
 
 def _rsi(close, period=14):
@@ -188,30 +228,13 @@ def compute_rsi_condition(df, daily_threshold=30, weekly_threshold=35, period=14
     }
 
 
-def approx_universe_pbr():
-    """
-    참고용: 이미 수집해둔 스크리닝 캐시(흑자 종목만 포함, PER>0)의 시가총액가중평균 PBR.
-    공식 "코스피 전체 PBR"과 달리 적자·저PBR 부실주가 빠져 있어 실제보다 높게 나오는
-    편향이 있다 - 그래서 판정에는 쓰지 않고 참고 수치로만 표시한다.
-    """
-    from screener import CACHE_CSV
-    if not CACHE_CSV.exists():
-        return None
-    try:
-        df = pd.read_csv(CACHE_CSV, encoding="utf-8-sig")
-        df = df[(df["PBR"] > 0) & (df["시가총액"] > 0)]
-        if df.empty:
-            return None
-        weighted = (df["PBR"] * df["시가총액"]).sum() / df["시가총액"].sum()
-        return round(weighted, 2)
-    except Exception:
-        return None
-
-
-def build_dashboard(pbr_input=None):
+def build_dashboard(pbr_override=None):
     """
     7개 지표를 계산해 결과 리스트(각 항목: 구분/지표/값/기준/충족여부/설명)와 요약(충족 개수,
     진입 판정)을 반환한다. 데이터를 못 가져온 지표는 충족여부 None(➖)으로 판정에서 제외한다.
+
+    pbr_override가 주어지면(사용자가 직접 입력) 크롤링 캐시보다 그 값을 우선한다 -
+    크롤링 캐시가 없거나 오래됐을 때의 수동 보정용.
     """
     kospi = fetch_index_history("KS11")
     kosdaq = fetch_index_history("KQ11")
@@ -221,12 +244,22 @@ def build_dashboard(pbr_input=None):
 
     rows = []
 
-    # 1. 밸류에이션(절대 저평가) - 사용자 직접 입력
-    pbr_met = None if pbr_input is None else pbr_input <= 0.85
+    # 1. 밸류에이션(절대 저평가) - indexergo.com 크롤링 캐시 우선, 없으면 수동 입력값 사용
+    pbr_cached, pbr_date = load_kospi_pbr_cache()
+    if pbr_override is not None:
+        pbr_value, pbr_source = pbr_override, "직접 입력값 사용"
+    elif pbr_cached is not None:
+        pbr_value, pbr_source = pbr_cached, f"indexergo.com 크롤링 캐시 기준일: {pbr_date} (crawl_kospi_pbr.py로 갱신)"
+    else:
+        pbr_value = None
+        pbr_source = (
+            f"크롤링 캐시 오래됨(마지막 {pbr_date}) - 직접 입력 필요" if pbr_date
+            else "크롤링 캐시 없음 - 직접 입력 필요"
+        )
+    pbr_met = None if pbr_value is None else pbr_value <= 0.85
     rows.append({
-        "구분": "밸류에이션", "지표": "코스피 PBR", "값": pbr_input, "단위": "배",
-        "기준": "0.85배 이하", "충족": pbr_met,
-        "설명": "자동 수집 API가 없어 직접 입력 필요 (KRX 정보데이터시스템·증권사 HTS 등에서 확인)",
+        "구분": "밸류에이션", "지표": "코스피 PBR", "값": pbr_value, "단위": "배",
+        "기준": "0.85배 이하", "충족": pbr_met, "설명": pbr_source,
     })
 
     # 2. 변동성/심리 - VKOSPI(크롤링 캐시) 우선, 캐시가 없거나 오래됐으면 VIX로 자동 전환
