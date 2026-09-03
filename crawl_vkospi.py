@@ -7,6 +7,10 @@ investing.com은 Cloudflare 봇 차단이 걸려 있어 배포 환경(Streamlit 
 market_dashboard.py는 그 캐시만 읽는다 - 캐시가 5일 넘게 갱신되지 않으면 대시보드가 자동으로
 VIX(사용자가 제시한 조건에 이미 명시된 대체 지표)로 전환하므로, 하루이틀 못 돌려도 죽지 않는다.
 
+TLS 지문 위장에 curl_cffi가 필요한데, 배포 앱은 이 스크립트를 절대 실행하지 않아
+requirements.txt에는 넣지 않았다 (넣으면 Streamlit Cloud 빌드에서 컴파일 실패 위험만
+생김). 로컬에 없다면 먼저 설치: pip install curl_cffi
+
 사용법:
     python crawl_vkospi.py
 """
