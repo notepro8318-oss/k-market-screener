@@ -3,8 +3,13 @@
 
 종목 스크리닝(screener.py)과 달리 OpenDART에 의존하지 않는다 - 지수/환율/VIX는
 FinanceDataReader(Naver·Yahoo 등 공개 소스 기반)로, CNN Fear & Greed는 비공식 공개
-API로 가져온다. 전부 해외 IP 차단이 없는 소스라 배포 환경(Streamlit Cloud)에서도
-매번 라이브로 조회한다 (screener.py처럼 로컬 배치 캐시가 필요 없음).
+API로 가져온다. 이 소스들은 해외 IP 차단이 없어 배포 환경(Streamlit Cloud)에서도
+매번 라이브로 조회한다.
+
+VKOSPI(코스피 변동성지수)만 예외다 - investing.com에서 크롤링해야 하는데 Cloudflare
+봇 차단이 걸려 있어, DART와 같은 방식으로 로컬에서 crawl_vkospi.py를 미리 실행해
+data/vkospi_cache.json에 저장해두고 여기서는 그 캐시만 읽는다. 캐시가 오래됐거나
+없으면 사용자가 제시한 조건에 이미 명시된 대체 지표인 VIX로 자동 전환한다.
 
 7개 지표(코스피 PBR은 자동 수집 API가 없어 사용자가 직접 입력) 중 충족 개수에 따라:
   - 4개 이상(PBR 충족 포함): 적극 진입
@@ -12,12 +17,19 @@ API로 가져온다. 전부 해외 IP 차단이 없는 소스라 배포 환경(S
   - 2개 이하: 진입 보류
 """
 
+import json
+import re
+
 import numpy as np
 import pandas as pd
 import requests
 import FinanceDataReader as fdr
 
+from screener import DATA_DIR
+
 _DEFAULT_TIMEOUT = 15
+VKOSPI_CACHE = DATA_DIR / "vkospi_cache.json"
+VKOSPI_URL = "https://kr.investing.com/indices/kospi-volatility"
 
 
 def fetch_index_history(symbol, years=2):
@@ -58,6 +70,56 @@ def fetch_cnn_fear_greed():
         r.raise_for_status()
         data = r.json()["fear_and_greed"]
         return float(data["score"]), data["rating"]
+    except Exception:
+        return None, None
+
+
+def fetch_vkospi_investing():
+    """
+    investing.com VKOSPI(코스피 변동성지수) 페이지에서 현재가를 가져온다. 이 사이트는
+    Cloudflare 봇 차단이 걸려 있어 일반 requests로는 403이 나고, TLS 지문을 크롬처럼
+    위장하는 curl_cffi(impersonate="chrome")를 써야 통과한다(라이브로 직접 확인함).
+    그래도 언제 막힐지 모르는 비공식 스크래핑이라 실패하면 None을 반환한다 -
+    crawl_vkospi.py에서만 호출하고, 실패해도 기존 캐시를 건드리지 않는다.
+    """
+    from curl_cffi import requests as creq
+    try:
+        r = creq.get(VKOSPI_URL, impersonate="chrome", timeout=20)
+        r.raise_for_status()
+        m = re.search(r'data-test="instrument-price-last">([\d.,]+)<', r.text)
+        if not m:
+            return None
+        return float(m.group(1).replace(",", ""))
+    except Exception:
+        return None
+
+
+def save_vkospi_cache(value):
+    VKOSPI_CACHE.parent.mkdir(exist_ok=True)
+    VKOSPI_CACHE.write_text(
+        json.dumps(
+            {"value": value, "date": pd.Timestamp.today().strftime("%Y-%m-%d")},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_vkospi_cache(max_age_days=5):
+    """
+    캐시가 없거나 max_age_days보다 오래됐으면 (value=None, 캐시일자)를 반환해 호출부가
+    VIX로 폴백하도록 한다. crawl_vkospi.py를 며칠 못 돌려도 대시보드가 죽지 않는다.
+    """
+    if not VKOSPI_CACHE.exists():
+        return None, None
+    try:
+        data = json.loads(VKOSPI_CACHE.read_text(encoding="utf-8"))
+        cached_date = pd.Timestamp(data["date"])
+        age_days = (pd.Timestamp.today().normalize() - cached_date).days
+        date_str = cached_date.strftime("%Y-%m-%d")
+        if age_days > max_age_days:
+            return None, date_str
+        return data["value"], date_str
     except Exception:
         return None, None
 
@@ -167,17 +229,26 @@ def build_dashboard(pbr_input=None):
         "설명": "자동 수집 API가 없어 직접 입력 필요 (KRX 정보데이터시스템·증권사 HTS 등에서 확인)",
     })
 
-    # 2. 변동성/심리 - VIX (VKOSPI 미지원이라 사용자 조건에 명시된 대체 지표 사용)
-    if vix is not None:
-        vix_last = round(vix["Close"].iloc[-1], 2)
-        vix_met = vix_last >= 30
+    # 2. 변동성/심리 - VKOSPI(크롤링 캐시) 우선, 캐시가 없거나 오래됐으면 VIX로 자동 전환
+    vkospi_value, vkospi_date = load_vkospi_cache()
+    if vkospi_value is not None:
+        rows.append({
+            "구분": "변동성·심리", "지표": "VKOSPI", "값": vkospi_value, "단위": "",
+            "기준": "25 이상", "충족": vkospi_value >= 25,
+            "설명": f"investing.com 크롤링 캐시 기준일: {vkospi_date} (crawl_vkospi.py로 갱신)",
+        })
     else:
-        vix_last, vix_met = None, None
-    rows.append({
-        "구분": "변동성·심리", "지표": "VIX (VKOSPI 대체)", "값": vix_last, "단위": "",
-        "기준": "30 이상", "충족": vix_met,
-        "설명": "VKOSPI는 무료 API가 없어 조건에 함께 명시된 VIX로 대체",
-    })
+        if vix is not None:
+            vix_last = round(vix["Close"].iloc[-1], 2)
+            vix_met = vix_last >= 30
+        else:
+            vix_last, vix_met = None, None
+        stale_note = f" (마지막 캐시일 {vkospi_date}, 5일 초과해 미사용)" if vkospi_date else " (크롤링 캐시 없음)"
+        rows.append({
+            "구분": "변동성·심리", "지표": "VIX (VKOSPI 대체)", "값": vix_last, "단위": "",
+            "기준": "30 이상", "충족": vix_met,
+            "설명": "VKOSPI 캐시가 없거나 오래돼 조건에 함께 명시된 VIX로 대체" + stale_note,
+        })
 
     # 3. 변동성/심리 - CNN Fear & Greed
     fg_met = None if fg_score is None else fg_score <= 20
