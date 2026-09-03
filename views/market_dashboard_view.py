@@ -13,6 +13,12 @@ _VERDICT_COLOR = {"적극 진입": "#22c55e", "정상 진입": "#eab308", "진�
 
 
 def _gauge(fill_pct, met, size=110, center_text=None, ring_width=0.28):
+    """
+    도넛 게이지. width를 고정하지 않고 height만 고정한 뒤 use_container_width=True로
+    그려야 한다 - width까지 고정하면 카드 컬럼의 실제 렌더링 폭과 어긋나 원이 잘려
+    보일 수 있다(plotly Pie는 항상 정원을 유지하되 더 좁은 쪽 치수에 맞춰 그린다).
+    여백을 살짝 남겨 원의 테두리가 플롯 영역 경계에 딱 붙어 잘리지 않게 한다.
+    """
     color = _STATUS_COLOR[met]
     pct = fill_pct if fill_pct is not None else 0
     fig = go.Figure(go.Pie(
@@ -21,7 +27,7 @@ def _gauge(fill_pct, met, size=110, center_text=None, ring_width=0.28):
         textinfo="none", sort=False, direction="clockwise", rotation=0,
     ))
     fig.update_layout(
-        showlegend=False, margin=dict(l=0, r=0, t=0, b=0), width=size, height=size,
+        showlegend=False, margin=dict(l=10, r=10, t=10, b=10), height=size,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         annotations=[dict(
             text=center_text if center_text is not None else _STATUS_ICON[met],
@@ -99,7 +105,7 @@ with left:
                 summary["충족_개수"] / summary["전체_지표수"] * 100, None, size=190,
                 center_text=f"{summary['충족_개수']}/{summary['전체_지표수']}",
             ).update_traces(marker=dict(colors=[_VERDICT_COLOR[verdict], "rgba(148,163,184,0.20)"])),
-            use_container_width=False, config={"displayModeBar": False}, key="summary_gauge",
+            use_container_width=True, config={"displayModeBar": False}, key="summary_gauge",
         )
         st.markdown(
             f"<div style='text-align:center;font-size:1.3rem;font-weight:700;color:{_VERDICT_COLOR[verdict]}'>"
@@ -122,16 +128,19 @@ with left:
                              config={"displayModeBar": False}, key="kosdaq_spark")
 
 with right:
+    CARD_HEIGHT = 300  # 카드마다 값/기준 문구 길이가 달라도 높이를 맞추기 위한 고정값
     card_cols = st.columns(4, gap="small")
     for i, r in enumerate(rows):
         with card_cols[i % 4]:
-            with st.container(border=True):
+            with st.container(border=True, height=CARD_HEIGHT):
                 st.caption(r["구분"])
                 st.markdown(f"**{r['지표']}**")
-                val_text = f"{r['값']}{r['단위']}" if r["값"] is not None else "데이터 없음"
-                st.markdown(f"<div style='font-size:1.05rem;font-weight:600'>{val_text}</div>", unsafe_allow_html=True)
+                card_val = r.get("카드값")
+                if card_val is None:
+                    card_val = f"{r['값']}{r['단위']}" if r["값"] is not None else "데이터 없음"
+                st.markdown(f"<div style='font-size:1.05rem;font-weight:600'>{card_val}</div>", unsafe_allow_html=True)
                 st.plotly_chart(
-                    _gauge(r.get("fill_pct"), r["충족"]), use_container_width=False,
+                    _gauge(r.get("fill_pct"), r["충족"]), use_container_width=True,
                     config={"displayModeBar": False}, key=f"gauge_{i}",
                 )
                 st.caption(r["기준"])

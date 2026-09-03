@@ -311,11 +311,12 @@ def build_dashboard(pbr_override=None):
     if usdkrw is not None and len(usdkrw) >= 20:
         fx_met, fx_detail = compute_bollinger_breakout(usdkrw)
         fx_val = f"{fx_detail['종가']}원 (상단 {fx_detail['상단밴드']}원, 변동폭 {fx_detail['당일변동폭']}원)"
+        fx_card_val = f"{fx_detail['종가']}원"
         fx_fill = _fill_pct(fx_detail["종가"], fx_detail["상단밴드"], "ge")
     else:
-        fx_met, fx_val, fx_fill = None, None, None
+        fx_met, fx_val, fx_card_val, fx_fill = None, None, None, None
     rows.append({
-        "구분": "외환 스트레스", "지표": "원/달러 환율", "값": fx_val, "단위": "",
+        "구분": "외환 스트레스", "지표": "원/달러 환율", "값": fx_val, "카드값": fx_card_val, "단위": "",
         "기준": "볼린저(20,2) 상단 돌파 + 일간 변동폭 15원 이상", "충족": fx_met,
         "설명": "외국인 무차별 패닉 셀링(환차손 회피) 정점 포착", "fill_pct": fx_fill,
     })
@@ -342,9 +343,16 @@ def build_dashboard(pbr_override=None):
             _fill_pct(abs(kosdaq_mdd) if kosdaq_mdd is not None else None, 20, "ge"),
         ] if f is not None
     ]
+    # 카드에는 둘 중 더 많이 빠진(=기준에 더 가까운) 쪽만 짧게 표시하고, 전체 비교는 상세 표에서.
+    if kospi_mdd is not None and (kosdaq_mdd is None or kospi_mdd <= kosdaq_mdd):
+        mdd_card_val = f"코스피 {kospi_mdd}%"
+    elif kosdaq_mdd is not None:
+        mdd_card_val = f"코스닥 {kosdaq_mdd}%"
+    else:
+        mdd_card_val = None
     rows.append({
         "구분": "지수 낙폭·이격", "지표": "MDD(52주 고점 대비)",
-        "값": f"코스피 {kospi_mdd}% / 코스닥 {kosdaq_mdd}%",
+        "값": f"코스피 {kospi_mdd}% / 코스닥 {kosdaq_mdd}%", "카드값": mdd_card_val,
         "단위": "", "기준": "코스피 -15% 이상 또는 코스닥 -20% 이상", "충족": mdd_met,
         "설명": "52주 고점 대비 유의미한 시스템적 가격 조정 확인 (둘 중 하나만 충족해도 인정)",
         "fill_pct": max(mdd_fill_candidates) if mdd_fill_candidates else None,
