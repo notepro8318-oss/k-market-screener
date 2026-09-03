@@ -870,13 +870,16 @@ def compute_raw_metrics(
         nopat = op_income_t * (1 - eff_tax_rate)
         roic = (nopat / invested_capital * 100) if invested_capital > 0 else None
 
+        # 전년동기(분모)가 0 이하(적자 포함)면 증가율이 부호가 뒤집히거나(예: -10 -> -50이
+        # +400%로 계산됨) 무의미하게 커지므로 계산하지 않고 None(표시 안 함) 처리한다.
+        # (전년동기가 흑자였다가 당기에 적자로 전환된 경우는 -100% 미만의 큰 감소로 정상 계산됨.)
         revenue_yoy_q = (
             (q_revenue_t - q_revenue_prev) / q_revenue_prev * 100
-            if q_revenue_prev not in (None, 0) else None
+            if q_revenue_prev is not None and q_revenue_prev > 0 else None
         )
         op_income_yoy_q = (
             (q_op_income_t - q_op_income_prev) / q_op_income_prev * 100
-            if q_op_income_prev not in (None, 0) else None
+            if q_op_income_prev is not None and q_op_income_prev > 0 else None
         )
 
         result["ROIC(%)"] = round(roic, 2) if roic is not None else None
