@@ -2,10 +2,10 @@ import streamlit as st
 
 st.set_page_config(page_title="K-Market Value Screener", page_icon="📈", layout="wide")
 
-screener_page = st.Page("views/screener_view.py", title="수익가치주", icon="📈", default=True)
+market_dashboard_page = st.Page("views/market_dashboard_view.py", title="시장 진입 타이밍", icon="🚦", default=True)
+screener_page = st.Page("views/screener_view.py", title="수익가치주", icon="📈")
 growth_page = st.Page("views/growth_view.py", title="성장주", icon="🚀")
-market_dashboard_page = st.Page("views/market_dashboard_view.py", title="시장 진입 타이밍", icon="🚦")
 backtest_page = st.Page("views/backtest_view.py", title="백테스트", icon="🧪")
 
-pg = st.navigation([screener_page, growth_page, market_dashboard_page, backtest_page])
+pg = st.navigation([market_dashboard_page, screener_page, growth_page, backtest_page])
 pg.run()

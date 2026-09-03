@@ -228,6 +228,18 @@ def compute_rsi_condition(df, daily_threshold=30, weekly_threshold=35, period=14
     }
 
 
+def _fill_pct(actual, threshold, direction="ge"):
+    """
+    카드 게이지용 0~100 충족도(%). direction="ge"면 값이 클수록 충족에 가깝고
+    (actual/threshold*100), "le"면 작을수록 충족에 가깝다(threshold/actual*100).
+    실제 충족 여부(True/False/None) 판정과는 별개로 순수 시각화용 근사치다.
+    """
+    if actual is None or not threshold:
+        return None
+    pct = (actual / threshold * 100) if direction == "ge" else (threshold / actual * 100 if actual > 0 else 100)
+    return max(0, min(100, round(pct)))
+
+
 def build_dashboard(pbr_override=None):
     """
     7개 지표를 계산해 결과 리스트(각 항목: 구분/지표/값/기준/충족여부/설명)와 요약(충족 개수,
@@ -260,6 +272,7 @@ def build_dashboard(pbr_override=None):
     rows.append({
         "구분": "밸류에이션", "지표": "코스피 PBR", "값": pbr_value, "단위": "배",
         "기준": "0.85배 이하", "충족": pbr_met, "설명": pbr_source,
+        "fill_pct": _fill_pct(pbr_value, 0.85, "le"),
     })
 
     # 2. 변동성/심리 - VKOSPI(크롤링 캐시) 우선, 캐시가 없거나 오래됐으면 VIX로 자동 전환
@@ -269,6 +282,7 @@ def build_dashboard(pbr_override=None):
             "구분": "변동성·심리", "지표": "VKOSPI", "값": vkospi_value, "단위": "",
             "기준": "25 이상", "충족": vkospi_value >= 25,
             "설명": f"investing.com 크롤링 캐시 기준일: {vkospi_date} (crawl_vkospi.py로 갱신)",
+            "fill_pct": _fill_pct(vkospi_value, 25, "ge"),
         })
     else:
         if vix is not None:
@@ -281,6 +295,7 @@ def build_dashboard(pbr_override=None):
             "구분": "변동성·심리", "지표": "VIX (VKOSPI 대체)", "값": vix_last, "단위": "",
             "기준": "30 이상", "충족": vix_met,
             "설명": "VKOSPI 캐시가 없거나 오래돼 조건에 함께 명시된 VIX로 대체" + stale_note,
+            "fill_pct": _fill_pct(vix_last, 30, "ge"),
         })
 
     # 3. 변동성/심리 - CNN Fear & Greed
@@ -289,18 +304,20 @@ def build_dashboard(pbr_override=None):
         "구분": "변동성·심리", "지표": "CNN Fear & Greed", "값": round(fg_score, 1) if fg_score else None,
         "단위": "점", "기준": "20 이하 (Extreme Fear)", "충족": fg_met,
         "설명": f"등급: {fg_rating}" if fg_rating else "비공식 API 응답 실패",
+        "fill_pct": _fill_pct(fg_score, 20, "le"),
     })
 
     # 4. 외환 스트레스
     if usdkrw is not None and len(usdkrw) >= 20:
         fx_met, fx_detail = compute_bollinger_breakout(usdkrw)
         fx_val = f"{fx_detail['종가']}원 (상단 {fx_detail['상단밴드']}원, 변동폭 {fx_detail['당일변동폭']}원)"
+        fx_fill = _fill_pct(fx_detail["종가"], fx_detail["상단밴드"], "ge")
     else:
-        fx_met, fx_val = None, None
+        fx_met, fx_val, fx_fill = None, None, None
     rows.append({
         "구분": "외환 스트레스", "지표": "원/달러 환율", "값": fx_val, "단위": "",
         "기준": "볼린저(20,2) 상단 돌파 + 일간 변동폭 15원 이상", "충족": fx_met,
-        "설명": "외국인 무차별 패닉 셀링(환차손 회피) 정점 포착",
+        "설명": "외국인 무차별 패닉 셀링(환차손 회피) 정점 포착", "fill_pct": fx_fill,
     })
 
     # 5. 지수 낙폭(MDD) - 코스피 -15% 또는 코스닥 -20% (둘 중 하나만 충족해도 인정)
@@ -317,11 +334,20 @@ def build_dashboard(pbr_override=None):
         kosdaq_mdd_met, mdd_detail["코스닥"] = None, None
     if kospi_mdd_met is not None or kosdaq_mdd_met is not None:
         mdd_met = bool(kospi_mdd_met) or bool(kosdaq_mdd_met)
+    kospi_mdd = mdd_detail.get("코스피")
+    kosdaq_mdd = mdd_detail.get("코스닥")
+    mdd_fill_candidates = [
+        f for f in [
+            _fill_pct(abs(kospi_mdd) if kospi_mdd is not None else None, 15, "ge"),
+            _fill_pct(abs(kosdaq_mdd) if kosdaq_mdd is not None else None, 20, "ge"),
+        ] if f is not None
+    ]
     rows.append({
         "구분": "지수 낙폭·이격", "지표": "MDD(52주 고점 대비)",
-        "값": f"코스피 {mdd_detail.get('코스피')}% / 코스닥 {mdd_detail.get('코스닥')}%",
+        "값": f"코스피 {kospi_mdd}% / 코스닥 {kosdaq_mdd}%",
         "단위": "", "기준": "코스피 -15% 이상 또는 코스닥 -20% 이상", "충족": mdd_met,
         "설명": "52주 고점 대비 유의미한 시스템적 가격 조정 확인 (둘 중 하나만 충족해도 인정)",
+        "fill_pct": max(mdd_fill_candidates) if mdd_fill_candidates else None,
     })
 
     # 6. 200일선 이격도 (코스피 기준)
@@ -333,6 +359,7 @@ def build_dashboard(pbr_override=None):
         "구분": "지수 낙폭·이격", "지표": "200일선 이격도(코스피)", "값": disparity_val, "단위": "%",
         "기준": "88% 이하", "충족": disparity_met,
         "설명": "단순 하향 이탈이 아닌, 평균 대비 12% 이상 폭락한 극단적 과매도 상태",
+        "fill_pct": _fill_pct(disparity_val, 88, "le"),
     })
 
     # 7. RSI(14) (코스피 기준)
@@ -340,11 +367,18 @@ def build_dashboard(pbr_override=None):
         rsi_met, rsi_detail = compute_rsi_condition(kospi)
     else:
         rsi_met, rsi_detail = None, {"일봉RSI": None, "주봉RSI": None}
+    rsi_fill_candidates = [
+        f for f in [
+            _fill_pct(rsi_detail.get("일봉RSI"), 30, "le"),
+            _fill_pct(rsi_detail.get("주봉RSI"), 35, "le"),
+        ] if f is not None
+    ]
     rows.append({
         "구분": "지수 낙폭·이격", "지표": "RSI(14, 코스피)",
         "값": f"일봉 {rsi_detail.get('일봉RSI')} / 주봉 {rsi_detail.get('주봉RSI')}",
         "단위": "", "기준": "주봉 35 이하 또는 일봉 30 이하", "충족": rsi_met,
         "설명": "일시적 눌림목이 아닌 중장기 추세 과매도 구간 검증",
+        "fill_pct": max(rsi_fill_candidates) if rsi_fill_candidates else None,
     })
 
     met_count = sum(1 for r in rows if r["충족"] is True)
