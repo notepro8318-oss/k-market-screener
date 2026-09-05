@@ -158,6 +158,44 @@ def fetch_korea_bond_spread(ecos_api_key):
         return None
 
 
+def compute_quarterly_cycle_phase(ecos_api_key, n_quarters=4, months_back=30):
+    """
+    선행지수 순환변동치(ECOS 901Y067/I16E, 기준값 100 = 추세, 이미 추세제거된 값)를
+    분기별로 리샘플링해 OECD 방식(수준 vs 모멘텀)으로 최근 n_quarters개 분기의 경기
+    국면을 4분류한다(Fidelity 비즈니스 사이클 차트의 Early/Mid/Late/Recession과 대응):
+      - 수준>100 & 모멘텀>0  -> Mid  (확장 전반, 가속)
+      - 수준>100 & 모멘텀<=0 -> Late (확장 후반, 둔화)
+      - 수준<=100 & 모멘텀<=0 -> Recession (수축)
+      - 수준<=100 & 모멘텀>0  -> Early (회복)
+    """
+    series = fetch_ecos_monthly_series(ecos_api_key, "901Y067", "I16E", months_back=months_back)
+    if series is None or len(series) < 15:
+        return None
+    ts = pd.Series(series.values, index=pd.to_datetime(series.index, format="%Y%m"))
+    quarterly = ts.resample("QE").last().dropna()
+    if len(quarterly) < n_quarters + 1:
+        return None
+    quarterly = quarterly.tail(n_quarters + 1)
+    momentum = quarterly.diff()
+    result = []
+    for q in quarterly.index[1:]:
+        level = quarterly.loc[q] - 100
+        mom = momentum.loc[q]
+        if level > 0 and mom > 0:
+            phase = "Mid"
+        elif level > 0 and mom <= 0:
+            phase = "Late"
+        elif level <= 0 and mom <= 0:
+            phase = "Recession"
+        else:
+            phase = "Early"
+        result.append({
+            "분기": f"Q{q.quarter} {q.year}", "값": round(float(quarterly.loc[q]), 2),
+            "모멘텀": round(float(mom), 2), "국면": phase,
+        })
+    return result[-n_quarters:]
+
+
 def build_korea_cycle(ecos_api_key, fx_df=None):
     """
     4개 레이어를 계산해 각 레이어의 지표값·강세 여부(True/False/None)·설명을 반환한다.
