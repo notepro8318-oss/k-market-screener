@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
 from korea_cycle import build_korea_cycle, compute_quarterly_cycle_phase
 from market_dashboard import fetch_index_history
@@ -46,7 +45,7 @@ if refresh:
 # --- 분기별 경기국면 위치 차트 (Fidelity 비즈니스 사이클 스타일) ---
 
 _PHASE_BAR = [("Early", 0.0, 0.24), ("Mid", 0.24, 0.55), ("Late", 0.55, 0.80), ("Recession", 0.80, 1.0)]
-_PHASE_SLOT = {"Early": (0.02, 0.22), "Mid": (0.26, 0.53), "Late": (0.57, 0.78), "Recession": (0.82, 0.98)}
+_PHASE_SLOT = {"Early": (0.005, 0.235), "Mid": (0.245, 0.545), "Late": (0.555, 0.795), "Recession": (0.805, 0.995)}
 
 
 def _cycle_curve_y(x, x_peak=0.55, x_zero=0.80, dip_amp=0.35):
@@ -95,39 +94,29 @@ def _cycle_position_chart(quarters):
     main_x = curve_x[curve_x <= x_zero]
     tail_x = curve_x[curve_x >= x_zero]
 
-    fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
-        row_heights=[0.16, 0.68, 0.16], vertical_spacing=0.04,
-    )
-
-    grad_x = np.linspace(0, 1, 100)
-    grad_scale = [[0, "#22c55e"], [0.5, "#eab308"], [1, "#ef4444"]]
-    for row in (1, 3):
-        fig.add_trace(go.Heatmap(
-            z=[grad_x], x=grad_x, y=[0], colorscale=grad_scale, showscale=False, hoverinfo="skip",
-        ), row=row, col=1)
+    fig = go.Figure()
 
     for name, lo, hi in _PHASE_BAR:
         fig.add_shape(
-            type="rect", x0=lo, x1=hi, y0=1.05, y1=1.35,
-            fillcolor="#5b7a9d", line=dict(color="white", width=1), row=2, col=1,
+            type="rect", x0=lo, x1=hi, y0=1.15, y1=1.45,
+            fillcolor="#5b7a9d", line=dict(color="white", width=1),
         )
         fig.add_annotation(
-            x=(lo + hi) / 2, y=1.2, text=name, showarrow=False,
-            font=dict(color="white", size=15, family="Arial Black"), row=2, col=1,
+            x=(lo + hi) / 2, y=1.3, text=name, showarrow=False,
+            font=dict(color="white", size=15, family="Arial Black"),
         )
 
     fig.add_trace(go.Scatter(
         x=main_x, y=[_cycle_curve_y(x) for x in main_x], mode="lines",
         line=dict(color="#6b7280", width=3), hoverinfo="skip",
-    ), row=2, col=1)
+    ))
     fig.add_trace(go.Scatter(
         x=tail_x, y=[_cycle_curve_y(x) for x in tail_x], mode="lines",
         line=dict(color="#ef4444", width=3), hoverinfo="skip",
-    ), row=2, col=1)
+    ))
     fig.add_shape(
         type="line", x0=0, x1=1, y0=0, y1=0,
-        line=dict(color="#9ca3af", width=1, dash="dot"), row=2, col=1,
+        line=dict(color="#9ca3af", width=1, dash="dot"),
     )
 
     n = len(quarters)
@@ -135,17 +124,16 @@ def _cycle_position_chart(quarters):
         is_last = i == n - 1
         fig.add_trace(go.Scatter(
             x=[x], y=[_cycle_curve_y(x)], mode="markers+text" if is_last else "markers",
-            marker=dict(size=38 if is_last else 18, color=color, line=dict(color="white", width=2)),
+            marker=dict(size=34 if is_last else 16, color=color, line=dict(color="white", width=2)),
             text=[q["분기"].split()[0]] if is_last else None,
-            textfont=dict(color="white", size=16, family="Arial Black"),
+            textfont=dict(color="white", size=14, family="Arial Black"),
             hovertext=f"{q['분기']}: {q['국면']} (선행지수 순환변동치 {q['값']})", hoverinfo="text",
-        ), row=2, col=1)
+        ))
 
     fig.update_xaxes(range=[0, 1], showticklabels=False, showgrid=False, zeroline=False)
-    fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
-    fig.update_yaxes(range=[-0.5, 1.5], row=2, col=1)
+    fig.update_yaxes(range=[-0.55, 1.55], showticklabels=False, showgrid=False, zeroline=False)
     fig.update_layout(
-        showlegend=False, height=460, margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False, height=340, margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
@@ -153,7 +141,7 @@ def _cycle_position_chart(quarters):
 
 quarters = _cached_quarters(ecos_key)
 with st.container(border=True):
-    st.caption("🌡️ 인플레이션 압력 (초록=낮음 → 빨강=높음, 개념 참고용)")
+    st.markdown("**분기별 경기국면 위치**")
     if quarters:
         st.plotly_chart(_cycle_position_chart(quarters), use_container_width=True, config={"displayModeBar": False})
         chip_colors = _amber_shades(len(quarters))
@@ -166,7 +154,6 @@ with st.container(border=True):
         st.markdown(f"<div style='text-align:center'><b>🇰🇷 한국</b>{chips}</div>", unsafe_allow_html=True)
     else:
         st.info("분기별 경기국면을 계산하기에 ECOS 선행지수 데이터가 충분하지 않습니다.")
-    st.caption("📊 경기민감자산 상대 성과 (초록=강세 → 빨강=약세, 개념 참고용)")
     st.caption(
         "선행지수 순환변동치(ECOS 901Y067)의 수준·모멘텀으로 분기별 경기국면(Early/Mid/Late/Recession)을 "
         "분류한 결과입니다. 곡선 모양은 국면 이해를 돕기 위한 장식용이며 실제 수치 그래프가 아닙니다."
