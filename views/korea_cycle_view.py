@@ -74,21 +74,16 @@ def _assign_dot_x(quarters):
     return xs
 
 
-def _amber_shades(n):
-    dark, light = (138, 75, 18), (245, 166, 35)
-    if n <= 1:
-        return ["#{:02x}{:02x}{:02x}".format(*light)]
-    return [
-        "#{:02x}{:02x}{:02x}".format(*[
-            round(dark[j] + (light[j] - dark[j]) * i / (n - 1)) for j in range(3)
-        ])
-        for i in range(n)
-    ]
+_QUARTER_PALETTE = ["#3b82f6", "#22c55e", "#a855f7", "#f97316", "#ec4899", "#14b8a6"]
+
+
+def _quarter_colors(n):
+    return [_QUARTER_PALETTE[i % len(_QUARTER_PALETTE)] for i in range(n)]
 
 
 def _cycle_position_chart(quarters):
     xs = _assign_dot_x(quarters)
-    colors = _amber_shades(len(quarters))
+    colors = _quarter_colors(len(quarters))
     curve_x = np.linspace(0, 1, 300)
     x_zero = 0.80
     main_x = curve_x[curve_x <= x_zero]
@@ -98,21 +93,21 @@ def _cycle_position_chart(quarters):
 
     for name, lo, hi in _PHASE_BAR:
         fig.add_shape(
-            type="rect", x0=lo, x1=hi, y0=1.15, y1=1.45,
+            type="rect", x0=lo, x1=hi, y0=1.2, y1=1.5,
             fillcolor="#5b7a9d", line=dict(color="white", width=1),
         )
         fig.add_annotation(
-            x=(lo + hi) / 2, y=1.3, text=name, showarrow=False,
-            font=dict(color="white", size=15, family="Arial Black"),
+            x=(lo + hi) / 2, y=1.35, text=name, showarrow=False,
+            font=dict(color="white", size=18, family="Arial Black"),
         )
 
     fig.add_trace(go.Scatter(
         x=main_x, y=[_cycle_curve_y(x) for x in main_x], mode="lines",
-        line=dict(color="#6b7280", width=3), hoverinfo="skip",
+        line=dict(color="#6b7280", width=4), hoverinfo="skip",
     ))
     fig.add_trace(go.Scatter(
         x=tail_x, y=[_cycle_curve_y(x) for x in tail_x], mode="lines",
-        line=dict(color="#ef4444", width=3), hoverinfo="skip",
+        line=dict(color="#ef4444", width=4), hoverinfo="skip",
     ))
     fig.add_shape(
         type="line", x0=0, x1=1, y0=0, y1=0,
@@ -124,16 +119,16 @@ def _cycle_position_chart(quarters):
         is_last = i == n - 1
         fig.add_trace(go.Scatter(
             x=[x], y=[_cycle_curve_y(x)], mode="markers+text" if is_last else "markers",
-            marker=dict(size=34 if is_last else 16, color=color, line=dict(color="white", width=2)),
+            marker=dict(size=54 if is_last else 32, color=color, line=dict(color="white", width=3)),
             text=[q["분기"].split()[0]] if is_last else None,
-            textfont=dict(color="white", size=14, family="Arial Black"),
+            textfont=dict(color="white", size=20, family="Arial Black"),
             hovertext=f"{q['분기']}: {q['국면']} (선행지수 순환변동치 {q['값']})", hoverinfo="text",
         ))
 
     fig.update_xaxes(range=[0, 1], showticklabels=False, showgrid=False, zeroline=False)
-    fig.update_yaxes(range=[-0.55, 1.55], showticklabels=False, showgrid=False, zeroline=False)
+    fig.update_yaxes(range=[-0.65, 1.65], showticklabels=False, showgrid=False, zeroline=False)
     fig.update_layout(
-        showlegend=False, height=340, margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False, height=480, margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
@@ -144,7 +139,7 @@ with st.container(border=True):
     st.markdown("**분기별 경기국면 위치**")
     if quarters:
         st.plotly_chart(_cycle_position_chart(quarters), use_container_width=True, config={"displayModeBar": False})
-        chip_colors = _amber_shades(len(quarters))
+        chip_colors = _quarter_colors(len(quarters))
         chips = "".join(
             f"<span style='display:inline-block;width:12px;height:12px;background:{c};"
             f"border-radius:2px;margin:0 4px 0 14px;vertical-align:middle'></span>"
