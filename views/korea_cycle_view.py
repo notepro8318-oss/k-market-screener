@@ -114,7 +114,7 @@ def _cycle_position_chart(quarters):
         )
         fig.add_annotation(
             x=(lo + hi) / 2, y=1.2, text=name, showarrow=False,
-            font=dict(color="white", size=12, family="Arial Black"), row=2, col=1,
+            font=dict(color="white", size=15, family="Arial Black"), row=2, col=1,
         )
 
     fig.add_trace(go.Scatter(
@@ -135,9 +135,9 @@ def _cycle_position_chart(quarters):
         is_last = i == n - 1
         fig.add_trace(go.Scatter(
             x=[x], y=[_cycle_curve_y(x)], mode="markers+text" if is_last else "markers",
-            marker=dict(size=30 if is_last else 14, color=color, line=dict(color="white", width=2)),
+            marker=dict(size=38 if is_last else 18, color=color, line=dict(color="white", width=2)),
             text=[q["분기"].split()[0]] if is_last else None,
-            textfont=dict(color="white", size=13, family="Arial Black"),
+            textfont=dict(color="white", size=16, family="Arial Black"),
             hovertext=f"{q['분기']}: {q['국면']} (선행지수 순환변동치 {q['값']})", hoverinfo="text",
         ), row=2, col=1)
 
@@ -145,7 +145,7 @@ def _cycle_position_chart(quarters):
     fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
     fig.update_yaxes(range=[-0.5, 1.5], row=2, col=1)
     fig.update_layout(
-        showlegend=False, height=330, margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False, height=460, margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
@@ -195,8 +195,9 @@ def _gauge(met, size=90):
 
 
 st.info(
-    "원래 설계된 8개 지표 중 2개(美 ISM 스프레드, 中 차이신 PMI)는 무료 공식 API가 없어 대체지표로 교체했습니다 "
-    "(자세한 내용은 하단 참고). '비반도체 수출'·'재고순환지표' 단독 통계는 이번 버전에 포함되지 않았습니다.",
+    "원래 설계된 8개 지표 중 2개(美 ISM 스프레드, 中 차이신 PMI)는 무료 공식 API가 없어 대체지표로 교체했습니다. "
+    "'비반도체 수출'만 관세청/KOSIS 별도 키가 필요해 총 수출 YoY로 대체 중입니다(자세한 내용은 하단 참고). "
+    "'재고순환지표'는 이번 업데이트로 3번 레이어에 추가됐습니다.",
     icon="ℹ️",
 )
 
@@ -233,9 +234,12 @@ with st.expander("📋 대체지표 사용 근거"):
         "같은 개념(주문 모멘텀 대비 재고 축적 속도)을 서베이 대신 실물 하드데이터로 근사.\n"
         "- **中 차이신 제조업 PMI → 국가통계국(NBS) 공식 제조업 PMI**: 차이신도 유료 라이선스라 무료 API 없음. "
         "다만 NBS는 국유기업 비중이 높아 차이신(민간·중소기업 위주)과 표본 성격이 다름을 감안해야 함.\n"
-        "- **비반도체 수출**: 한국은행 ECOS에 반도체 제외 수출 단독 통계가 없어 이번 버전에서는 총 수출 YoY로 단순화.\n"
-        "- **재고순환지표**: 통계청 KOSIS 신규 API 키 등록이 필요해 이번 버전에서는 제외. "
-        "다만 선행지수 순환변동치 자체가 재고순환지표를 구성요소 중 하나로 포함하고 있음.\n"
+        "- **비반도체 수출**: 한국은행 ECOS에 반도체 제외 수출 단독 통계(MTI/HS 품목별 세부 분류)가 없어 "
+        "총 수출 YoY로 단순화. 관세청 UNI-PASS 또는 통계청 KOSIS Open API 키를 새로 등록하면 실제 값으로 "
+        "교체할 수 있음(무료 발급이나 사용자 본인 명의 신청 필요).\n"
+        "- **재고순환지표**: ECOS 901Y032(산업별 생산·출하·재고 지수)의 총지수 출하/재고 원지수로 "
+        "'출하 YoY - 재고 YoY'를 계산 - 통계청이 실제 쓰는 정의와 동일하며, 기존 ECOS 키만으로 3번 레이어에 "
+        "반영됩니다(대체지표가 아닌 실제 지표).\n"
         "- **분기별 경기국면 위치(상단 차트)**: 선행지수 순환변동치(기준=100, 이미 추세제거된 값)의 수준과 "
         "전분기 대비 모멘텀만으로 국면을 분류합니다(OECD의 경기순환시계 방식과 동일한 논리). "
         "인플레이션 압력·자산 성과 그라데이션 바는 참고용 개념도이며 특정 지표에 연동되지 않습니다."

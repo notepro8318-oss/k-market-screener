@@ -13,13 +13,14 @@ waterfall 참고: 글로벌 수요 -> 한국 수출 -> 국내 공장 -> 금융/�
     국가통계국(NBS) 공식 제조업 PMI로 대체 - 다만 국유기업 비중이 높아 차이신
     (민간·중소기업 위주 서베이)과는 표본 성격이 다르다는 점을 감안해야 한다.
 
-한국 데이터 3개는 전부 한국은행 ECOS(기존 스크리너에서 쓰는 키 재사용, 신규 등록 불필요)로
+한국 데이터는 전부 한국은행 ECOS(기존 스크리너에서 쓰는 키 재사용, 신규 등록 불필요)로
 커버된다:
-  - 수출: 901Y118(수출금액, 월별) - "비반도체 수출" 단독 통계는 ECOS에 없어 총 수출
-    YoY로 단순화했다(반도체 착시를 걸러내는 원래 취지는 이번 버전에서 빠짐).
-  - 경기: 901Y067의 I16E(선행지수순환변동치) - "재고순환지표" 단독 시리즈는 통계청
-    KOSIS 신규 키 등록이 필요해 이번 버전에서는 빠졌지만, 선행지수순환변동치 자체가
-    재고순환지표를 구성요소 중 하나로 이미 포함한다.
+  - 수출: 901Y118(수출금액, 월별) - "비반도체 수출" 단독 통계(MTI/HS 품목별 세부 분류)는
+    ECOS에 없어(관세청/KOSIS 별도 키가 필요) 총 수출 YoY로 단순화했다(반도체 착시를
+    걸러내는 원래 취지는 이번 버전에서 빠짐).
+  - 경기: 901Y067의 I16E(선행지수순환변동치) + 901Y032(산업별 생산/출하/재고 지수)의
+    총지수(I11A) 출하지수(구분 3)/재고지수(구분 5)로 계산한 재고순환지표(출하 YoY -
+    재고 YoY, 통계청 공식 정의와 동일) - 둘 다 기존 ECOS 키로 바로 커버된다.
   - 금리: 817Y002의 국고채 10년(010210000) - 3년(010200000) 스프레드.
 
 원/달러 60일 이평선은 market_dashboard.py의 fetch_index_history()를 그대로 재사용한다.
@@ -127,6 +128,24 @@ def fetch_korea_leading_index(ecos_api_key):
     falling = bool((last4.diff().dropna() < 0).all())
     trend = "상승반전" if rising else ("하락반전" if falling else "혼조")
     return {"값": round(series.iloc[-1], 2), "추세": trend, "기준월": series.index[-1]}
+
+
+def fetch_korea_inventory_cycle(ecos_api_key):
+    """
+    재고순환지표(생산자제품 출하 YoY% - 생산자제품 재고 YoY%, 통계청이 실제로 쓰는 정의와 동일).
+    ECOS 901Y032(산업별 생산/출하/재고 지수)의 총지수(I11A) 항목 중 출하지수 원지수(구분코드 3)와
+    재고지수 원지수(구분코드 5)로 계산한다 - 통계청 신규 API 키 없이 기존 ECOS 키로 바로 커버된다.
+    양수면 출하가 재고보다 빨리 늘어 재고가 소진되는 확장 신호, 음수면 재고가 쌓이는 둔화 신호.
+    """
+    shipment = fetch_ecos_monthly_series(ecos_api_key, "901Y032", "I11A/3")
+    inventory = fetch_ecos_monthly_series(ecos_api_key, "901Y032", "I11A/5")
+    ship_yoy, inv_yoy = _yoy(shipment), _yoy(inventory)
+    if ship_yoy is None or inv_yoy is None:
+        return None
+    return {
+        "재고순환지표": round(ship_yoy - inv_yoy, 2), "출하_YoY": ship_yoy, "재고_YoY": inv_yoy,
+        "기준월": shipment.index[-1],
+    }
 
 
 def fetch_korea_bond_spread(ecos_api_key):
@@ -244,14 +263,26 @@ def build_korea_cycle(ecos_api_key, fx_df=None):
     lead_ok = None if kr_lead is None else (
         True if kr_lead["추세"] == "상승반전" else (False if kr_lead["추세"] == "하락반전" else None)
     )
+    kr_inv = fetch_korea_inventory_cycle(ecos_api_key)
+    inv_ok = None if kr_inv is None else kr_inv["재고순환지표"] > 0
+    if lead_ok is None or inv_ok is None:
+        l3_verdict = lead_ok if inv_ok is None else inv_ok
+    elif lead_ok and inv_ok:
+        l3_verdict = True
+    elif lead_ok or inv_ok:
+        l3_verdict = "partial"
+    else:
+        l3_verdict = False
     layers.append({
-        "레이어": "3. 공장 체력", "판정": lead_ok,
+        "레이어": "3. 공장 체력", "판정": l3_verdict,
         "지표": [
             {"이름": "선행지수 순환변동치", "값": f"{kr_lead['값']} ({kr_lead['추세']})" if kr_lead else None,
              "충족": lead_ok, "기준": "최근 3개월 연속 상승"},
+            {"이름": "재고순환지표(출하YoY-재고YoY)", "값": f"{kr_inv['재고순환지표']}%p" if kr_inv else None,
+             "충족": inv_ok, "기준": "0%p 초과(재고 소진 국면)"},
         ],
-        "강세신호": "선행지수 순환변동치 3개월 연속 반등",
-        "약세신호": "3개월 연속 반락: 공장 가동 둔화 임박 신호",
+        "강세신호": "선행지수 순환변동치 3개월 연속 반등 및 재고순환지표 플러스(재고 소진)",
+        "약세신호": "둘 다 반락/마이너스: 공장 가동 둔화 확인 / 한쪽만: 신호 엇갈림(부분 확장)",
     })
 
     kr_bond = fetch_korea_bond_spread(ecos_api_key)
