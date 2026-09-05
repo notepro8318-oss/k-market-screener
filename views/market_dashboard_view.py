@@ -43,18 +43,29 @@ def _hex_to_rgba(hex_color, alpha):
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _sparkline(df, color):
+def _sparkline(df, color, height=65):
     close = df["Close"]
     fig = go.Figure(go.Scatter(
         x=close.index, y=close.values, mode="lines", line=dict(color=color, width=2), fill="tozeroy",
         fillcolor=_hex_to_rgba(color, 0.12),
     ))
     fig.update_layout(
-        showlegend=False, margin=dict(l=0, r=0, t=4, b=0), height=80,
+        showlegend=False, margin=dict(l=0, r=0, t=4, b=0), height=height,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(visible=False), yaxis=dict(visible=False),
     )
     return fig
+
+
+_PERIOD_DAYS = {"1W": 7, "3M": 90, "6M": 182, "1Y": 365}
+
+
+def _slice_period(df, period):
+    if df is None:
+        return None
+    cutoff = pd.Timestamp.today() - pd.DateOffset(days=_PERIOD_DAYS[period])
+    sliced = df[df.index >= cutoff]
+    return sliced if not sliced.empty else df
 
 
 cache_meta_col, refresh_col = st.columns([5, 1])
@@ -82,7 +93,11 @@ def _cached_dashboard(pbr_override):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_trend():
-    return fetch_index_history("KS11", years=1), fetch_index_history("KQ11", years=1)
+    return (
+        fetch_index_history("KS11", years=1),
+        fetch_index_history("KQ11", years=1),
+        fetch_index_history("US500", years=1),
+    )
 
 
 if refresh:
@@ -97,11 +112,10 @@ with cache_meta_col:
 
 left, right = st.columns([1, 2.3], gap="medium")
 
-ROW1_HEIGHT = 360  # 1열(카드 4개) 높이 = 좌측 "종합 판정" 박스 기준
-ROW2_HEIGHT = 300  # 2열(카드 3개) 높이 = 좌측 "최근 1년 지수 추이" 박스 기준
+BOX_HEIGHT = 380  # 좌측 두 박스(종합 판정/지수 추이) 및 우측 카드 전부 동일 높이
 
 with left:
-    with st.container(border=True, height=ROW1_HEIGHT):
+    with st.container(border=True, height=BOX_HEIGHT):
         st.markdown("**종합 판정**")
         st.plotly_chart(
             _gauge(
@@ -118,24 +132,31 @@ with left:
         if summary["데이터없음_개수"] > 0:
             st.caption(f"➖ 데이터 없음 {summary['데이터없음_개수']}개는 판정에서 제외")
 
-    kospi_hist, kosdaq_hist = _cached_trend()
-    with st.container(border=True, height=ROW2_HEIGHT):
-        st.markdown("**최근 1년 지수 추이**")
-        if kospi_hist is not None:
-            st.caption("코스피")
-            st.plotly_chart(_sparkline(kospi_hist, "#3b82f6"), use_container_width=True,
-                             config={"displayModeBar": False}, key="kospi_spark")
-        if kosdaq_hist is not None:
-            st.caption("코스닥")
-            st.plotly_chart(_sparkline(kosdaq_hist, "#f97316"), use_container_width=True,
-                             config={"displayModeBar": False}, key="kosdaq_spark")
+    kospi_hist, kosdaq_hist, sp500_hist = _cached_trend()
+    with st.container(border=True, height=BOX_HEIGHT):
+        title_col, period_col = st.columns([2, 3])
+        with title_col:
+            st.markdown("**지수 추이**")
+        with period_col:
+            period = st.segmented_control(
+                "기간", ["1W", "3M", "6M", "1Y"], default="1Y", required=True,
+                label_visibility="collapsed", key="trend_period",
+            )
+        for label, hist, color in [
+            ("코스피", kospi_hist, "#3b82f6"), ("코스닥", kosdaq_hist, "#f97316"),
+            ("S&P500", sp500_hist, "#8b5cf6"),
+        ]:
+            sliced = _slice_period(hist, period)
+            if sliced is not None:
+                st.caption(label)
+                st.plotly_chart(_sparkline(sliced, color), use_container_width=True,
+                                 config={"displayModeBar": False}, key=f"{label}_spark")
 
 with right:
     card_cols = st.columns(4, gap="small")
     for i, r in enumerate(rows):
-        card_height = ROW1_HEIGHT if i < 4 else ROW2_HEIGHT
         with card_cols[i % 4]:
-            with st.container(border=True, height=card_height):
+            with st.container(border=True, height=BOX_HEIGHT):
                 st.caption(r["구분"])
                 st.markdown(f"**{r['지표']}**")
                 card_val = r.get("카드값")
