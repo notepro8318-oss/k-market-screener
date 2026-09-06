@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from market_dashboard import build_dashboard, fetch_index_history, load_kospi_pbr_cache
+from sector_mdd import build_sector_mdd_table
 
 st.title("🚦 시장 진입 타이밍")
 st.caption("코스피·코스닥 전체 시장의 '지금이 저점권인가'를 확인하는 대시보드 — 개별 종목이 아닌 시장 전체 환경을 봅니다.")
@@ -170,6 +171,22 @@ with right:
                 st.caption(r["기준"])
         if i % 4 == 3 and i != len(rows) - 1:
             card_cols = st.columns(4, gap="small")
+
+st.divider()
+st.markdown("**📉 산업군별 YTD 최대낙폭(MDD)**")
+sector_rows = build_sector_mdd_table()
+sector_df = pd.DataFrame(sector_rows).sort_values("YTD MDD(%)", na_position="last")
+st.dataframe(
+    sector_df, use_container_width=True, hide_index=True,
+    column_config={
+        "YTD MDD(%)": st.column_config.NumberColumn(format="%.2f%%"),
+    },
+)
+st.caption(
+    "WICS(WISE Index) 10개 대분류 섹터 기준, 올해 1월 2일 이후 일별 섹터 시가총액으로 계산한 "
+    "최대낙폭(고점 대비 최대 하락폭)입니다. 데이터는 매일 자동 수집되며, 최초 수집 전이거나 "
+    "휴장일에는 일부 값이 비어 있을 수 있습니다."
+)
 
 st.divider()
 with st.expander("📋 지표 상세 (기준·설명 포함 전체 표)"):
