@@ -1,5 +1,5 @@
 """
-WICS(WISE Index) 10개 대분류 섹터의 YTD 최대낙폭(MDD)을 계산하기 위한 데이터 수집·캐시 모듈.
+WICS(WISE Index) 27개 산업군(중분류)의 YTD 최대낙폭(MDD)을 계산하기 위한 데이터 수집·캐시 모듈.
 
 wiseindex.com(FnGuide가 운영하는 WICS 공식 산출기관)의 비공식이지만 공개된 JSON
 엔드포인트(GetIndexComponets)를 사용한다. 이 엔드포인트는 특정 일자의 섹터 구성종목과
@@ -24,11 +24,36 @@ _DEFAULT_TIMEOUT = 15
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 _WISE_URL = "https://www.wiseindex.com/Index/GetIndexComponets"
 
-# WICS 대분류(Level 1) 10개 섹터 - wiseindex.com에서 실제 응답으로 확인된 코드/한글명.
+# WICS 산업군(Level 2, 중분류) 27개 - wiseindex.com에 G(대분류2자리)+(산업군2자리) 코드로
+# 하나씩 직접 조회해 실제 응답이 오는 코드만 골라 확인했다(GICS 산업군 개수와도 대조 완료).
 SECTOR_CODES = {
-    "G10": "에너지", "G15": "소재", "G20": "산업재", "G25": "경기관련소비재",
-    "G30": "필수소비재", "G35": "건강관리", "G40": "금융", "G45": "IT",
-    "G50": "커뮤니케이션서비스", "G55": "유틸리티",
+    "G1010": "에너지",
+    "G1510": "소재",
+    "G2010": "자본재",
+    "G2020": "상업서비스와공급품",
+    "G2030": "운송",
+    "G2510": "자동차와부품",
+    "G2520": "내구소비재와의류",
+    "G2530": "호텔,레스토랑,레저등",
+    "G2550": "소매(유통)",
+    "G2560": "교육서비스",
+    "G3010": "식품과기본식료품소매",
+    "G3020": "식품,음료,담배",
+    "G3030": "가정용품과개인용품",
+    "G3510": "건강관리장비와서비스",
+    "G3520": "제약과생물공학",
+    "G4010": "은행",
+    "G4020": "증권",
+    "G4030": "다각화된금융",
+    "G4040": "보험",
+    "G4050": "부동산",
+    "G4510": "소프트웨어와서비스",
+    "G4520": "기술하드웨어와장비",
+    "G4530": "반도체와반도체장비",
+    "G4540": "디스플레이",
+    "G5010": "전기통신서비스",
+    "G5020": "미디어와엔터테인먼트",
+    "G5510": "유틸리티",
 }
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -105,7 +130,7 @@ def save_sector_cache(cache):
 
 def build_sector_mdd_table():
     """
-    캐시된 {sec_cd: {date: mkt_val}}로부터 섹터별 YTD MDD 표(list of dict)를 만든다.
+    캐시된 {sec_cd: {date: mkt_val}}로부터 산업군별 YTD MDD 표(list of dict)를 만든다.
     화면 표시용 - 크롤링은 하지 않고 이미 저장된 캐시만 읽는다.
     """
     cache = load_sector_cache()
@@ -114,7 +139,7 @@ def build_sector_mdd_table():
         series = cache.get(sec_cd, {})
         stats = compute_mdd_from_series(series)
         rows.append({
-            "섹터": name,
+            "산업군": name,
             "YTD MDD(%)": stats["mdd_pct"] if stats else None,
             "고점": stats["peak_date"] if stats else None,
             "저점": stats["trough_date"] if stats else None,
