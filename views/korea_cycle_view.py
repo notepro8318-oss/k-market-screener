@@ -118,10 +118,10 @@ def _cycle_position_chart(quarters):
     for i, (q, x, color) in enumerate(zip(quarters, xs, colors)):
         is_last = i == n - 1
         fig.add_trace(go.Scatter(
-            x=[x], y=[_cycle_curve_y(x)], mode="markers+text" if is_last else "markers",
+            x=[x], y=[_cycle_curve_y(x)], mode="markers+text",
             marker=dict(size=54 if is_last else 32, color=color, line=dict(color="white", width=3)),
-            text=[q["분기"].split()[0]] if is_last else None,
-            textfont=dict(color="white", size=20, family="Arial Black"),
+            text=[q["분기"].split()[0]],
+            textfont=dict(color="white", size=20 if is_last else 13, family="Arial Black"),
             hovertext=f"{q['분기']}: {q['국면']} (선행지수 순환변동치 {q['값']})", hoverinfo="text",
         ))
 
