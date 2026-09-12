@@ -69,6 +69,28 @@ def _slice_period(df, period):
     return sliced if not sliced.empty else df
 
 
+def _dual_axis_chart(kospi_df, fx_df, height=340):
+    """코스피(좌측 축)와 원/달러 환율(우측 축)을 같은 x축에 겹쳐 그린다."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=kospi_df.index, y=kospi_df["Close"], mode="lines", name="코스피",
+        line=dict(color="#3b82f6", width=2), yaxis="y",
+    ))
+    fig.add_trace(go.Scatter(
+        x=fx_df.index, y=fx_df["Close"], mode="lines", name="원/달러 환율",
+        line=dict(color="#f97316", width=2), yaxis="y2",
+    ))
+    fig.update_layout(
+        height=height, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(title="코스피", color="#3b82f6", showgrid=False),
+        yaxis2=dict(title="원/달러", color="#f97316", overlaying="y", side="right", showgrid=False),
+    )
+    return fig
+
+
 cache_meta_col, refresh_col = st.columns([5, 1])
 with refresh_col:
     refresh = st.button("🔄 새로고침", type="primary", use_container_width=True)
@@ -98,6 +120,7 @@ def _cached_trend():
         fetch_index_history("KS11", years=1),
         fetch_index_history("KQ11", years=1),
         fetch_index_history("US500", years=1),
+        fetch_index_history("USD/KRW", years=1),
     )
 
 
@@ -133,7 +156,7 @@ with left:
         if summary["데이터없음_개수"] > 0:
             st.caption(f"➖ 데이터 없음 {summary['데이터없음_개수']}개는 판정에서 제외")
 
-    kospi_hist, kosdaq_hist, sp500_hist = _cached_trend()
+    kospi_hist, kosdaq_hist, sp500_hist, fx_hist = _cached_trend()
     with st.container(border=True, height=BOX_HEIGHT):
         title_col, period_col = st.columns([2, 3])
         with title_col:
@@ -171,6 +194,26 @@ with right:
                 st.caption(r["기준"])
         if i % 4 == 3 and i != len(rows) - 1:
             card_cols = st.columns(4, gap="small")
+
+st.divider()
+title_col2, period_col2 = st.columns([2, 3])
+with title_col2:
+    st.markdown("**💱 코스피 vs 원/달러 환율**")
+with period_col2:
+    fx_period = st.segmented_control(
+        "기간", ["1W", "3M", "6M", "1Y"], default="1Y", required=True,
+        label_visibility="collapsed", key="fx_trend_period",
+    )
+kospi_sliced = _slice_period(kospi_hist, fx_period)
+fx_sliced = _slice_period(fx_hist, fx_period)
+if kospi_sliced is not None and fx_sliced is not None:
+    st.plotly_chart(
+        _dual_axis_chart(kospi_sliced, fx_sliced), use_container_width=True,
+        config={"displayModeBar": False}, key="kospi_fx_chart",
+    )
+    st.caption("좌측 축: 코스피 지수, 우측 축: 원/달러 환율(종가 기준). 환율 하락(원화 강세)과 코스피 상승이 겹치는지 한눈에 볼 수 있습니다.")
+else:
+    st.info("코스피 또는 원/달러 환율 데이터를 가져오지 못했습니다.")
 
 st.divider()
 st.markdown("**📉 산업군별 YTD 최대낙폭(MDD)**")
