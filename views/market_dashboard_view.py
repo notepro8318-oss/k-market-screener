@@ -58,16 +58,32 @@ def _sparkline(df, color, height=65):
     return fig
 
 
-_PERIOD_DAYS = {"1W": 7, "3M": 90, "6M": 182, "1Y": 365, "5Y": 365 * 5, "10Y": 365 * 10}
-_PERIOD_OPTIONS = ["1W", "3M", "6M", "1Y", "5Y", "10Y"]
-
-
-def _slice_period(df, period):
+def _slice_year_range(df, start_year, end_year):
     if df is None:
         return None
-    cutoff = pd.Timestamp.today() - pd.DateOffset(days=_PERIOD_DAYS[period])
-    sliced = df[df.index >= cutoff]
-    return sliced if not sliced.empty else df
+    sliced = df[(df.index.year >= start_year) & (df.index.year <= end_year)]
+    return sliced if not sliced.empty else None
+
+
+def _year_range_selector(key_prefix, min_year, max_year, compact=False):
+    """
+    시작연도/종료연도 선택 UI. 시작 > 종료로 고르면 자동으로 맞바꿔 반환한다.
+    compact=True면 선택창 폭을 좁게 줄여 나머지 공간을 비워둔다(전체 폭 컨테이너용).
+    """
+    years = list(range(min_year, max_year + 1))
+    cols = st.columns([1, 1, 4]) if compact else st.columns(2)
+    start_col, end_col = cols[0], cols[1]
+    with start_col:
+        start_year = st.selectbox(
+            "시작연도", years, index=max(0, len(years) - 6), key=f"{key_prefix}_start_year",
+        )
+    with end_col:
+        end_year = st.selectbox(
+            "종료연도", years, index=len(years) - 1, key=f"{key_prefix}_end_year",
+        )
+    if start_year > end_year:
+        start_year, end_year = end_year, start_year
+    return start_year, end_year
 
 
 def _dual_axis_chart(kospi_df, fx_df, height=340):
@@ -118,10 +134,10 @@ def _cached_dashboard(pbr_override):
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_trend():
     return (
-        fetch_index_history("KS11", years=10),
-        fetch_index_history("KQ11", years=10),
-        fetch_index_history("US500", years=10),
-        fetch_index_history("USD/KRW", years=10),
+        fetch_index_history("KS11", years=20),
+        fetch_index_history("KQ11", years=20),
+        fetch_index_history("US500", years=20),
+        fetch_index_history("USD/KRW", years=20),
     )
 
 
@@ -158,17 +174,18 @@ with left:
             st.caption(f"➖ 데이터 없음 {summary['데이터없음_개수']}개는 판정에서 제외")
 
     kospi_hist, kosdaq_hist, sp500_hist, fx_hist = _cached_trend()
+    _hist_years = [h.index.min().year for h in (kospi_hist, kosdaq_hist, sp500_hist, fx_hist) if h is not None]
+    min_year = min(_hist_years) if _hist_years else pd.Timestamp.today().year
+    max_year = pd.Timestamp.today().year
+
     with st.container(border=True, height=BOX_HEIGHT):
         st.markdown("**지수 추이**")
-        period = st.segmented_control(
-            "기간", _PERIOD_OPTIONS, default="1Y", required=True,
-            label_visibility="collapsed", key="trend_period",
-        )
+        start_year, end_year = _year_range_selector("trend", min_year, max_year)
         for label, hist, color in [
             ("코스피", kospi_hist, "#3b82f6"), ("코스닥", kosdaq_hist, "#f97316"),
             ("S&P500", sp500_hist, "#8b5cf6"),
         ]:
-            sliced = _slice_period(hist, period)
+            sliced = _slice_year_range(hist, start_year, end_year)
             if sliced is not None:
                 st.caption(label)
                 st.plotly_chart(_sparkline(sliced, color), use_container_width=True,
@@ -194,16 +211,10 @@ with right:
             card_cols = st.columns(4, gap="small")
 
 st.divider()
-title_col2, period_col2 = st.columns([2, 3])
-with title_col2:
-    st.markdown("**💱 코스피 vs 원/달러 환율**")
-with period_col2:
-    fx_period = st.segmented_control(
-        "기간", _PERIOD_OPTIONS, default="1Y", required=True,
-        label_visibility="collapsed", key="fx_trend_period",
-    )
-kospi_sliced = _slice_period(kospi_hist, fx_period)
-fx_sliced = _slice_period(fx_hist, fx_period)
+st.markdown("**💱 코스피 vs 원/달러 환율**")
+fx_start_year, fx_end_year = _year_range_selector("fx_trend", min_year, max_year, compact=True)
+kospi_sliced = _slice_year_range(kospi_hist, fx_start_year, fx_end_year)
+fx_sliced = _slice_year_range(fx_hist, fx_start_year, fx_end_year)
 if kospi_sliced is not None and fx_sliced is not None:
     st.plotly_chart(
         _dual_axis_chart(kospi_sliced, fx_sliced), use_container_width=True,
