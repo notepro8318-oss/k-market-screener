@@ -58,7 +58,8 @@ def _sparkline(df, color, height=65):
     return fig
 
 
-_PERIOD_DAYS = {"1W": 7, "3M": 90, "6M": 182, "1Y": 365}
+_PERIOD_DAYS = {"1W": 7, "3M": 90, "6M": 182, "1Y": 365, "5Y": 365 * 5, "10Y": 365 * 10}
+_PERIOD_OPTIONS = ["1W", "3M", "6M", "1Y", "5Y", "10Y"]
 
 
 def _slice_period(df, period):
@@ -117,10 +118,10 @@ def _cached_dashboard(pbr_override):
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_trend():
     return (
-        fetch_index_history("KS11", years=1),
-        fetch_index_history("KQ11", years=1),
-        fetch_index_history("US500", years=1),
-        fetch_index_history("USD/KRW", years=1),
+        fetch_index_history("KS11", years=10),
+        fetch_index_history("KQ11", years=10),
+        fetch_index_history("US500", years=10),
+        fetch_index_history("USD/KRW", years=10),
     )
 
 
@@ -158,14 +159,11 @@ with left:
 
     kospi_hist, kosdaq_hist, sp500_hist, fx_hist = _cached_trend()
     with st.container(border=True, height=BOX_HEIGHT):
-        title_col, period_col = st.columns([2, 3])
-        with title_col:
-            st.markdown("**지수 추이**")
-        with period_col:
-            period = st.segmented_control(
-                "기간", ["1W", "3M", "6M", "1Y"], default="1Y", required=True,
-                label_visibility="collapsed", key="trend_period",
-            )
+        st.markdown("**지수 추이**")
+        period = st.segmented_control(
+            "기간", _PERIOD_OPTIONS, default="1Y", required=True,
+            label_visibility="collapsed", key="trend_period",
+        )
         for label, hist, color in [
             ("코스피", kospi_hist, "#3b82f6"), ("코스닥", kosdaq_hist, "#f97316"),
             ("S&P500", sp500_hist, "#8b5cf6"),
@@ -201,7 +199,7 @@ with title_col2:
     st.markdown("**💱 코스피 vs 원/달러 환율**")
 with period_col2:
     fx_period = st.segmented_control(
-        "기간", ["1W", "3M", "6M", "1Y"], default="1Y", required=True,
+        "기간", _PERIOD_OPTIONS, default="1Y", required=True,
         label_visibility="collapsed", key="fx_trend_period",
     )
 kospi_sliced = _slice_period(kospi_hist, fx_period)
