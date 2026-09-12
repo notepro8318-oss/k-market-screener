@@ -1,7 +1,8 @@
 # Windows 작업 스케줄러가 매일 실행하는 시장 대시보드 보조지표 자동 갱신 스크립트.
-# 1) crawl_vkospi.py     (investing.com, VKOSPI)
-# 2) crawl_kospi_pbr.py  (indexergo.com, 코스피 PBR)
-# 3) crawl_sector_mdd.py (wiseindex.com, WICS 10개 섹터 YTD MDD - 캐시에 없는 날짜만 증분 수집)
+# 1) crawl_vkospi.py         (investing.com, VKOSPI)
+# 2) crawl_kospi_pbr.py      (indexergo.com, 코스피 PBR)
+# 3) crawl_sector_mdd.py     (wiseindex.com, WICS 27개 산업군 YTD MDD - 캐시에 없는 날짜만 증분 수집)
+# 4) crawl_chart_screener.py (FinanceDataReader, 전종목 월봉 5개월선·거래량/거래대금 급증 - 매일 전체 재평가)
 # 각각 성공하고 값이 바뀐 캐시 파일만 모아서 한 번에 커밋/푸시한다.
 # 실패하거나 값이 그대로면 커밋하지 않는다 (기존 캐시 유지 - market_dashboard.py의
 # 5일 초과 시 자동 대체/직접입력 요구 로직이 있어 하루이틀 실패해도 대시보드는 죽지 않는다).
@@ -21,8 +22,9 @@ try {
     & $python crawl_vkospi.py 2>&1 | Out-File -FilePath $logFile -Append -Encoding utf8
     & $python crawl_kospi_pbr.py 2>&1 | Out-File -FilePath $logFile -Append -Encoding utf8
     & $python crawl_sector_mdd.py 2>&1 | Out-File -FilePath $logFile -Append -Encoding utf8
+    & $python crawl_chart_screener.py 2>&1 | Out-File -FilePath $logFile -Append -Encoding utf8
 
-    git add data/vkospi_cache.json data/kospi_pbr_cache.json data/sector_mdd_cache.json
+    git add data/vkospi_cache.json data/kospi_pbr_cache.json data/sector_mdd_cache.json data/chart_screener_cache.json
     $diff = git diff --cached --stat
     if ($diff) {
         git commit -m "Update market dashboard cache ($(Get-Date -Format 'yyyy-MM-dd'))" | Out-File -FilePath $logFile -Append -Encoding utf8

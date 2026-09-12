@@ -6,7 +6,10 @@ market_dashboard_page = st.Page("views/market_dashboard_view.py", title="시장 
 korea_cycle_page = st.Page("views/korea_cycle_view.py", title="한국 경제사이클", icon="🌐")
 screener_page = st.Page("views/screener_view.py", title="수익가치주", icon="📈")
 growth_page = st.Page("views/growth_view.py", title="성장주", icon="🚀")
+chart_screener_page = st.Page("views/chart_screener_view.py", title="차트 분석", icon="📊")
 backtest_page = st.Page("views/backtest_view.py", title="백테스트", icon="🧪")
 
-pg = st.navigation([market_dashboard_page, korea_cycle_page, screener_page, growth_page, backtest_page])
+pg = st.navigation([
+    market_dashboard_page, korea_cycle_page, screener_page, growth_page, chart_screener_page, backtest_page,
+])
 pg.run()
