@@ -4,7 +4,7 @@ import streamlit as st
 from chart_screener import load_chart_screener_cache
 
 st.title("📊 차트 분석 종목 찾기")
-st.caption("1단계 장기 추세 필터 → 2단계 수급 유효성 검증 → 3단계 상투 분산 배제, 3단계 시스템 트레이딩 스크리닝")
+st.caption("1단계 장기 추세 → 2단계 수급 유효성(최근 N봉 내) → 3단계 상투 분산 배제 → 4단계 재반등 확인, 4단계 시스템 트레이딩 스크리닝")
 
 cache = load_chart_screener_cache()
 if cache is None:
@@ -17,9 +17,26 @@ if cache is None:
 
 st.caption(
     f"데이터 기준일: {cache['generated_at']} (종목 {cache['count']}개) — "
-    "거래량 급증·캔들 형태는 그날그날 새로 나오는 신호라 매일 자동 갱신됩니다. "
-    "4단계(2차 파동 타점)는 시간 흐름 추적이 필요한 별도 로직이라 이번 화면에는 포함되어 있지 않습니다."
+    "거래량 급증·재반등 확인은 그날그날 새로 나오는 신호라 매일 자동 갱신됩니다."
 )
+
+
+def _check_stage2(row, lookback_bars, vol_ratio_threshold_pct, value_floor):
+    dates = row.get("최근30봉_일자") or []
+    ratios = row.get("최근30봉_거래량배수_전일대비") or []
+    values = row.get("최근30봉_거래대금") or []
+    n = min(lookback_bars, len(dates))
+    best = None
+    for d, r, v in zip(dates[-n:], ratios[-n:], values[-n:]):
+        if r is None or v is None:
+            continue
+        if r * 100 >= vol_ratio_threshold_pct and v >= value_floor:
+            if best is None or d > best[0]:
+                best = (d, r, v)
+    if best:
+        return pd.Series({"2단계_충족": True, "2단계_충족일": best[0], "2단계_충족일_거래량배수": best[1], "2단계_충족일_거래대금": best[2]})
+    return pd.Series({"2단계_충족": False, "2단계_충족일": None, "2단계_충족일_거래량배수": None, "2단계_충족일_거래대금": None})
+
 
 with st.sidebar:
     st.header("⚙️ 1단계 · 장기 추세 필터")
@@ -30,24 +47,29 @@ with st.sidebar:
     )
 
     st.header("⚙️ 2단계 · 수급 유효성 검증")
+    lookback_bars = st.slider(
+        "최근 며칠(봉) 이내에 발생했는지 확인 (최대 30봉)",
+        min_value=5, max_value=30, value=20,
+        help="이 기간 안에 거래량 배수·거래대금 조건을 동시에 만족한 날이 하루라도 있으면 통과",
+    )
     min_volume_ratio_pct = st.number_input(
-        "상대 거래량 배수 (%) 이상 (기준 300~500%)", min_value=100.0, value=300.0, step=50.0,
-        help="최근 거래일 거래량 ÷ 직전 20거래일 평균 × 100. 500%는 참고용 상한이며, 초과해도 통과합니다(제외하지 않음).",
+        "거래량 배수 (%) 이상 (전일 대비)", min_value=100.0, value=300.0, step=50.0,
+        help="그날 거래량 ÷ 전일 거래량 × 100",
     )
     large_cap_threshold_eok = st.number_input(
         "대형주 기준 시가총액 (억원) 이상", min_value=0.0, value=10000.0, step=1000.0,
-        help="이 값 이상이면 대형주, 미만이면 중소형주로 분류",
+        help="이 값 이상이면 대형주, 미만이면 소형주로 분류",
     )
     min_value_large_eok = st.number_input(
-        "대형주 당일 거래대금 (억원) 이상", min_value=0.0, value=1000.0, step=100.0,
+        "대형주 거래대금 (억원) 이상", min_value=0.0, value=1000.0, step=100.0,
     )
     min_value_small_eok = st.number_input(
-        "중소형주 당일 거래대금 (억원) 이상", min_value=0.0, value=500.0, step=50.0,
+        "소형주 거래대금 (억원) 이상", min_value=0.0, value=500.0, step=50.0,
     )
 
     st.header("⚙️ 3단계 · 상투 분산 배제")
     max_rise_from_low_pct = st.number_input(
-        "최근 6개월 저점 대비 상승률 (%) 초과 시 제외",
+        "120거래일(약 6개월) 저점 대비 상승률 (%) 초과 시 제외",
         min_value=0.0, value=80.0, step=5.0,
     )
     max_monthly_ma5_disparity_pct = st.number_input(
@@ -55,13 +77,14 @@ with st.sidebar:
         help="월봉 종가 ÷ 5개월 이동평균선 × 100",
     )
     max_daily_ma60_disparity_pct = st.number_input(
-        "일봉 60MA 이격도 (%) 초과 시 제외", min_value=100.0, value=108.0, step=1.0,
+        "일봉 60MA 이격도 (%) 초과 시 제외", min_value=100.0, value=112.0, step=1.0,
         help="현재가 ÷ 일봉 60일 이동평균선 × 100",
     )
-    max_upper_wick_body_pct = st.number_input(
-        "대량거래일 윗꼬리/몸통 비율 (%) 초과 시 제외", min_value=0.0, value=100.0, step=10.0,
-        help="대량거래일(=최근 거래일) 캔들의 (고가 - max(시가,종가)) ÷ |종가-시가| × 100. "
-        "100% 초과면 윗꼬리가 몸통보다 길다는 뜻으로, 고점 매도 압력(세력 이탈) 신호로 봅니다.",
+
+    st.header("⚙️ 4단계 · 재반등 확인")
+    require_stage4 = st.checkbox(
+        "당일 5일선 이상 또는 당일 양봉 조건 적용", value=True,
+        help="눌림목 이후 재반등 신호 — 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일 종가가 시가보다 높으면(양봉) 통과",
     )
 
     market = st.radio("시장", ["전체", "KOSPI", "KOSDAQ"], horizontal=True, key="chart_market")
@@ -74,8 +97,8 @@ if run_clicked:
         df = df[df["시장구분"] == market]
 
     required_cols = [
-        "5개월선_연속상회월수", "일간_거래량배수", "시가총액", "당일_거래대금",
-        "6개월저점대비_상승률(%)", "월봉5MA이격도(%)", "일봉60MA이격도(%)", "윗꼬리몸통비율(%)",
+        "5개월선_연속상회월수", "시가총액", "120봉저점대비_상승률(%)",
+        "월봉5MA이격도(%)", "일봉60MA이격도(%)", "당일5일선이상", "당일양봉",
     ]
     df = df.dropna(subset=required_cols)
 
@@ -84,20 +107,24 @@ if run_clicked:
     min_value_small = min_value_small_eok * 100_000_000
 
     is_large = df["시가총액"] >= large_cap_threshold
-    required_value_floor = is_large.map({True: min_value_large, False: min_value_small})
+    df["_value_floor"] = is_large.map({True: min_value_large, False: min_value_small})
+
+    stage2 = df.apply(lambda r: _check_stage2(r, lookback_bars, min_volume_ratio_pct, r["_value_floor"]), axis=1)
+    df = pd.concat([df, stage2], axis=1)
 
     cond = (
         (df["5개월선_연속상회월수"] >= min_consecutive_months)
-        & (df["일간_거래량배수"] * 100 >= min_volume_ratio_pct)
-        & (df["당일_거래대금"] >= required_value_floor)
-        & (df["6개월저점대비_상승률(%)"] <= max_rise_from_low_pct)
+        & (df["2단계_충족"])
+        & (df["120봉저점대비_상승률(%)"] <= max_rise_from_low_pct)
         & (df["월봉5MA이격도(%)"] <= max_monthly_ma5_disparity_pct)
         & (df["일봉60MA이격도(%)"] <= max_daily_ma60_disparity_pct)
-        & (df["윗꼬리몸통비율(%)"] <= max_upper_wick_body_pct)
     )
+    if require_stage4:
+        cond = cond & (df["당일5일선이상"] | df["당일양봉"])
+
     df_screened = df[cond].copy()
     if not df_screened.empty:
-        df_screened = df_screened.sort_values("일간_거래량배수", ascending=False)
+        df_screened = df_screened.sort_values("2단계_충족일_거래량배수", ascending=False)
         df_screened["시가총액(억)"] = (df_screened["시가총액"] / 100_000_000).round(0)
         df_screened["_종목명_plain"] = df_screened["종목명"]
         df_screened["종목명"] = df_screened.apply(
@@ -114,16 +141,17 @@ elif df_final.empty:
     st.warning("조건을 모두 만족하는 종목이 없습니다. 조건을 완화한 뒤 다시 시도해보세요.")
 else:
     st.success(f"{len(df_final)}개 종목이 조건을 통과했습니다.")
-    st.caption("거래량 배수(일간) 높은 순으로 정렬되어 있습니다.")
+    st.caption("2단계 충족일 거래량 배수 높은 순으로 정렬되어 있습니다.")
     st.dataframe(
         df_final,
         use_container_width=True,
         hide_index=True,
         column_order=[
             "종목코드", "종목명", "시장구분", "시총구분", "시가총액(억)", "현재가",
-            "5개월선_연속상회월수", "일간_거래량배수", "당일_거래대금",
-            "6개월저점대비_상승률(%)", "월봉5MA이격도(%)", "일봉60MA이격도(%)", "윗꼬리몸통비율(%)",
-            "기준일",
+            "5개월선_연속상회월수",
+            "2단계_충족일", "2단계_충족일_거래량배수", "2단계_충족일_거래대금",
+            "120봉저점대비_상승률(%)", "월봉5MA이격도(%)", "일봉60MA이격도(%)",
+            "당일5일선이상", "당일양봉", "기준일",
         ],
         column_config={
             "종목코드": st.column_config.TextColumn(
@@ -136,7 +164,7 @@ else:
                 "시장구분", help="상장 시장 (KOSPI 또는 KOSDAQ)",
             ),
             "시총구분": st.column_config.TextColumn(
-                "시총구분", help="사이드바에서 설정한 시가총액 기준(기본 1조원)에 따른 대형주/중소형주 구분",
+                "시총구분", help="사이드바에서 설정한 시가총액 기준(기본 1조원)에 따른 대형주/소형주 구분",
             ),
             "시가총액(억)": st.column_config.NumberColumn(
                 "시가총액(억)", help="현재 시가총액 (단위: 억원)",
@@ -148,16 +176,18 @@ else:
                 "5개월선 연속상회(개월)",
                 help="월봉 종가가 5개월 이동평균선 위에 있었던, 가장 최근 달(이번달 포함)부터의 연속 개월 수",
             ),
-            "일간_거래량배수": st.column_config.NumberColumn(
-                "거래량 배수(일간)", format="%.1f배",
-                help="최근 거래일 거래량 ÷ 직전 20거래일 평균 거래량. 3~5배가 기준 구간(참고용, 5배 초과도 통과)",
+            "2단계_충족일": st.column_config.TextColumn(
+                "수급충족일", help="최근 조회 구간 내에서 거래량·거래대금 조건을 동시에 만족한 가장 최근 날짜",
             ),
-            "당일_거래대금": st.column_config.NumberColumn(
-                "당일 거래대금(원)", help="가장 최근 거래일의 거래대금 (종가 × 거래량으로 근사)",
+            "2단계_충족일_거래량배수": st.column_config.NumberColumn(
+                "충족일 거래량배수", format="%.1f배", help="충족일의 거래량 ÷ 전일 거래량",
             ),
-            "6개월저점대비_상승률(%)": st.column_config.NumberColumn(
-                "6개월저점 대비(%)", format="%.1f%%",
-                help="최근 6개월 저점 대비 현재가 상승률. 너무 높으면 이미 크게 오른 뒤의 급증(상투)으로 보고 제외 대상",
+            "2단계_충족일_거래대금": st.column_config.NumberColumn(
+                "충족일 거래대금(원)", help="충족일의 거래대금 (종가 × 거래량으로 근사)",
+            ),
+            "120봉저점대비_상승률(%)": st.column_config.NumberColumn(
+                "120봉저점 대비(%)", format="%.1f%%",
+                help="최근 120거래일(약 6개월) 저점 대비 현재가 상승률. 너무 높으면 이미 크게 오른 뒤(상투)로 보고 제외 대상",
             ),
             "월봉5MA이격도(%)": st.column_config.NumberColumn(
                 "월봉5MA 이격도(%)", format="%.1f%%",
@@ -167,16 +197,18 @@ else:
                 "일봉60MA 이격도(%)", format="%.1f%%",
                 help="현재가 ÷ 일봉 60일 이동평균선 × 100. 100%보다 크게 벌어질수록 평균회귀 급락 위험",
             ),
-            "윗꼬리몸통비율(%)": st.column_config.NumberColumn(
-                "윗꼬리/몸통(%)", format="%.0f%%",
-                help="대량거래일(최근 거래일) 캔들의 윗꼬리 ÷ 몸통 × 100. 100% 초과면 고점에서 매도 압력에 밀린 캔들(세력 이탈 신호)",
+            "당일5일선이상": st.column_config.CheckboxColumn(
+                "당일≥5일선", help="당일 종가가 일봉 5일 이동평균선 이상인지",
+            ),
+            "당일양봉": st.column_config.CheckboxColumn(
+                "당일양봉", help="당일 종가가 시가보다 높은지(양봉)",
             ),
             "기준일": st.column_config.TextColumn(
                 "기준일", help="이 지표들을 계산한 가장 최근 거래일",
             ),
         },
     )
-    csv_df = df_final.drop(columns=["_종목명_plain"], errors="ignore").copy()
+    csv_df = df_final.drop(columns=["_종목명_plain", "_value_floor"], errors="ignore").copy()
     if "_종목명_plain" in df_final.columns:
         csv_df["종목명"] = df_final["_종목명_plain"]
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8-sig")
@@ -187,41 +219,24 @@ else:
         mime="text/csv",
     )
 
-with st.expander("ℹ️ 조건 설명 (1~3단계)"):
+with st.expander("ℹ️ 조건 설명 (1~4단계)"):
     st.markdown(
         """
 - **1단계 · 장기 추세 필터**: 월봉 종가가 5개월 이동평균선 위에서 연속으로 머문 개월 수(이번달 포함, 기본 3개월 이상)
-  — 하락 추세 역배열 상태에서의 휩소(가짜 신호)를 걸러냅니다.
-- **2단계 · 수급 유효성 검증**:
-  - 상대 거래량 배수: 최근 거래일 거래량이 직전 20거래일 평균 대비 300~500% (기관·외국인 등 스마트머니 유입 확인 —
-    500%를 넘어도 제외하지 않고 참고용으로만 표시합니다)
-  - 거래대금 최소 기준(시가총액 규모별 차등): 대형주(기본 1조원 이상)는 당일 거래대금 1,000억원 이상,
-    중소형주는 500억원 이상 — 대형주는 배수만으로는 잘 안 걸리고 중소형주는 배수는 쉽게 튀지만 절대금액이
-    작으면 의미 있는 자금 유입인지 알기 어려워 규모별로 나눴습니다.
-- **3단계 · 상투 분산 배제** (평균회귀 급락·세력 매도 리스크 회피):
-  - 최근 6개월 저점 대비 상승률이 기준(기본 80%) 초과면 제외
-  - 월봉 5MA 이격도가 기준(기본 115%) 초과면 제외
-  - 일봉 60MA 이격도가 기준(기본 108%) 초과면 제외
-  - 대량거래일(최근 거래일) 캔들의 윗꼬리가 몸통 대비 기준(기본 100%) 초과면 제외
-    (윗꼬리가 길다 = 장중 고가까지 올랐다가 매도 물량에 밀려 내려온 캔들 — 세력이 물량을 넘기고 빠지는 신호로 해석)
+- **2단계 · 수급 유효성 검증**: 최근 N봉(기본 20봉) 이내에 "그날 거래량이 전일 대비 300% 이상"이면서
+  "그날 거래대금이 시총 규모별 기준(대형주 1,000억/소형주 500억) 이상"인 날이 동시에 1회 이상 있었는지 확인
+  (당일이 아니어도, 최근 며칠 내 그런 수급 이벤트가 있었으면 통과 — 이벤트 발생일과 당일 시점의 다른 조건이
+  같은 날일 필요는 없습니다)
+- **3단계 · 상투 분산 배제**: 120거래일(약 6개월) 저점 대비 상승률(기본 80% 이하), 월봉 5MA 이격도(기본 115% 이하),
+  일봉 60MA 이격도(기본 112% 이하) — 평균회귀 급락 리스크 회피
+- **4단계 · 재반등 확인**: 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일 종가가 시가보다 높으면(양봉) 통과
+  — 눌림목 이후 재반등하는 흐름인지 확인
         """
     )
 
-with st.expander("📖 4~5단계 (이번 화면에는 미포함 — 참고용 설명)"):
+with st.expander("📖 청산 프로토콜 (참고용 — 자동 판정하지 않음)"):
     st.markdown(
         """
-**4단계 · 2차 파동 타점** (미구현 — 별도 설계 필요)
-
-1~3단계가 "오늘 하루의 스냅샷"만으로 판정 가능한 반면, 4단계는 1차 파동(돌파) 발생 이후
-눌림목(조정)을 거쳐 재돌파하는 흐름을 시간에 걸쳐 추적해야 하는 로직이라 이번 구현 범위에서는
-제외했습니다. 필요하시면 아래 항목들의 정확한 판정 규칙(스윙 고점/저점을 어떻게 정의할지,
-1차 파동을 며칠~몇 달의 창으로 볼지 등)을 논의해 별도로 설계·구현할 수 있습니다.
-- 1차 반등 후 되돌림 폭이 38.2%~50.0% 구간에서 지지
-- 눌림목 구간의 일평균 거래량이 1차 대량거래량의 30% 이하로 마름
-- 1차 파동 전고점을 종가로 돌파하며 거래량 250% 증가 시 매수
-
-**5단계 · 청산 프로토콜** (코드 로직 없이 참고용 설명만 제공)
-
 이 화면은 신규 진입 후보를 찾는 스크리너이고, 실제로 어떤 종목을 얼마에 보유 중인지는 알 수
 없어 아래 규칙은 자동 판정하지 않습니다. 직접 보유 종목에 적용해보세요.
 - 손절매: 진입 가격 대비 -6.5% 터치 시 장중 즉시 전량 매도
