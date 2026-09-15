@@ -4,8 +4,12 @@
 1단계(장기 추세): 월봉 종가가 5개월 이동평균선 위에서 3개월 이상 연속 유지
 2단계(수급 유효성): 최근 20거래일(봉) 이내에 "그날 거래량이 직전 20일 평균 거래량(VMA20) 대비
                   300% 이상"이면서 "그날 거래대금이 시총 규모별 기준(대형주 1,000억/소형주
-                  500억) 이상"인 날이 동시에 1회 이상 있었는지
-3단계(상투 분산 배제): 120거래일(약 6개월) 저점 대비 현재가 상승률, 월봉 5MA/일봉 60MA 이격도
+                  500억) 이상"인 날("기준봉")이 동시에 1회 이상 있었는지
+3단계(상투 분산 배제): 120거래일(약 6개월) 저점 대비 현재가 상승률(시총 규모별 차등), 250거래일
+                    (약 52주) 신고가 대비 현재가 괴리율(-35%~-15% 구간), 월봉 5MA/일봉 60MA
+                    이격도, 기준봉(2단계에서 찾은 가장 최근 이벤트일) 캔들의 윗꼬리/몸통 비율,
+                    기준봉 다음날부터 어제까지(눌림목 구간)의 평균 거래량이 기준봉 거래량 대비
+                    얼마나 줄었는지
 4단계(재반등 확인): 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일이 양봉(종가>시가)
 
 기존에 있던 "청산 프로토콜"(손절/익절/추세청산)은 실제 보유 종목의 매입가를 알아야 의미가
@@ -19,8 +23,11 @@ DART 재무데이터가 필요 없어 OpenDART의 해외 IP 차단 문제는 없
 
 캐시에는 최종 통과 여부가 아니라 종목별 계산된 원본 지표만 저장한다. 특히 2단계는 "최근 20봉
 중 1회 이상"처럼 화면에서 조절 가능해야 하는 구간 조건이라, 배치 단계에서 20봉으로 미리
-확정하지 않고 여유 있게 30봉치의 일별 (거래량_VMA20대비배수, 거래대금) 원본 시계열을 저장해
-화면 슬라이더로 봉 수·배수·거래대금 기준을 자유롭게 조절할 수 있게 한다.
+확정하지 않고 여유 있게 30봉치의 일별 (거래량_VMA20대비배수, 거래대금, 거래량, 윗꼬리몸통비율)
+원본 시계열을 저장해 화면 슬라이더로 봉 수·배수·거래대금 기준을 자유롭게 조절할 수 있게 한다.
+"기준봉"(2단계 조건을 만족한 가장 최근 봉)이 어느 날짜인지는 화면에서 설정한 슬라이더 값에
+따라 달라지므로, 그 봉의 캔들 형태(윗꼬리/몸통)나 그 이후 눌림목 구간의 거래량도 화면에서
+저장된 30봉 원본 시계열 안에서 그때그때 찾아 계산한다.
 """
 
 import json
@@ -62,6 +69,13 @@ LARGE_CAP_THRESHOLD = 1_000_000_000_000
 # 30봉치를 저장해둔다.
 _LOOKBACK_STORE_BARS = 30
 
+# 52주 신고가(약 250거래일) 대비 괴리율 계산에 필요한 최소 데이터 길이.
+_HIGH_52W_BARS = 250
+
+# 캔들 몸통이 0(시가=종가, 도지)인데 윗꼬리가 있는 경우, 몸통 대비 배수를 정의할 수 없어
+# "명백히 몸통을 초과"하는 것으로 간주해 큰 값(200%)을 대입한다.
+_DOJI_WITH_WICK_SENTINEL_PCT = 200.0
+
 
 def fetch_universe():
     """
@@ -81,12 +95,13 @@ def evaluate_stock(ticker, name, market, marcap, df):
     종목 하나의 일봉 OHLCV(df, DatetimeIndex + Open/Close/Volume 컬럼)로부터
     1~4단계 판정에 필요한 원본 지표를 계산해 반환한다. 데이터가 부족하면 None.
     """
-    required_cols = {"Open", "Close", "Volume"}
+    required_cols = {"Open", "High", "Close", "Volume"}
     if df is None or df.empty or not required_cols.issubset(df.columns):
         return None
 
     df = df.sort_index()
     open_ = df["Open"].astype(float)
+    high = df["High"].astype(float)
     close = df["Close"].astype(float)
     volume = df["Volume"].astype(float)
     trading_value = close * volume
@@ -106,10 +121,13 @@ def evaluate_stock(ticker, name, market, marcap, df):
         else:
             break
 
-    if len(close) < 120:  # 120봉 저점 계산에 필요한 최소치
+    if len(close) < _HIGH_52W_BARS:  # 52주 신고가(250봉) 계산에 필요한 최소치(120봉 저점보다 큼)
         return None
 
-    # --- 2단계: 최근 N봉(최대 30봉 저장) 일별 (거래량 VMA20대비배수, 거래대금) 원본 시계열 ---
+    # --- 2단계: 최근 N봉(최대 30봉 저장) 일별 (거래량 VMA20대비배수, 거래대금, 거래량,
+    #     윗꼬리몸통비율) 원본 시계열. "기준봉"(2단계를 만족한 날)이 이 30봉 중 어디인지는
+    #     화면 슬라이더 값에 따라 달라지므로, 3단계의 캔들 윗꼬리(#7)·눌림목 거래량(#9)도
+    #     이 시계열에서 필요할 때 찾아 계산할 수 있도록 함께 저장해둔다.
     # VMA20(20일 거래량 이동평균)은 일반적인 차트 지표와 동일하게 당일 거래량을 포함한
     # 20거래일 평균으로 계산한다(HTS/차트에서 그려지는 거래량 이동평균선과 동일한 정의).
     vma20 = volume.rolling(20).mean()
@@ -124,11 +142,30 @@ def evaluate_stock(ticker, name, market, marcap, df):
         round(float(v)) if pd.notna(v) else None
         for v in trading_value.reindex(recent_idx)
     ]
+    recent_volume = [
+        round(float(v)) if pd.notna(v) else None
+        for v in volume.reindex(recent_idx)
+    ]
+    recent_wick_ratio = []
+    for o, h, c in zip(open_.reindex(recent_idx), high.reindex(recent_idx), close.reindex(recent_idx)):
+        if pd.isna(o) or pd.isna(h) or pd.isna(c):
+            recent_wick_ratio.append(None)
+            continue
+        body = abs(c - o)
+        upper_wick = h - max(o, c)
+        if body > 0:
+            recent_wick_ratio.append(round(upper_wick / body * 100, 2))
+        else:
+            recent_wick_ratio.append(_DOJI_WITH_WICK_SENTINEL_PCT if upper_wick > 0 else 0.0)
 
     # --- 3단계: 120거래일(약 6개월) 저점 대비 상승률 ---
     low_120 = close.iloc[-120:].min()
     latest_close = close.iloc[-1]
     rise_from_120low_pct = (latest_close / low_120 - 1) * 100 if low_120 > 0 else None
+
+    # --- 3단계: 250거래일(약 52주) 신고가 대비 괴리율(%) - 실제 고가(High) 기준 ---
+    high_250 = high.iloc[-_HIGH_52W_BARS:].max()
+    gap_from_52w_high_pct = (latest_close / high_250 - 1) * 100 if high_250 > 0 else None
 
     # --- 3단계: 이동평균 이격도(%) = 종가 / 이동평균 * 100 ---
     latest_ma5_monthly = ma5_monthly.iloc[-1]
@@ -172,7 +209,10 @@ def evaluate_stock(ticker, name, market, marcap, df):
         f"최근{_LOOKBACK_STORE_BARS}봉_일자": recent_dates,
         f"최근{_LOOKBACK_STORE_BARS}봉_거래량배수_VMA20대비": recent_vol_ratio,
         f"최근{_LOOKBACK_STORE_BARS}봉_거래대금": recent_value,
+        f"최근{_LOOKBACK_STORE_BARS}봉_거래량": recent_volume,
+        f"최근{_LOOKBACK_STORE_BARS}봉_윗꼬리몸통비율(%)": recent_wick_ratio,
         "120봉저점대비_상승률(%)": round(rise_from_120low_pct, 2) if rise_from_120low_pct is not None else None,
+        "250봉고점대비_괴리율(%)": round(gap_from_52w_high_pct, 2) if gap_from_52w_high_pct is not None else None,
         "월봉5MA이격도(%)": round(monthly_ma5_disparity_pct, 2) if monthly_ma5_disparity_pct is not None else None,
         "일봉60MA이격도(%)": round(daily_ma60_disparity_pct, 2) if daily_ma60_disparity_pct is not None else None,
         "당일5일선이상": above_ma5_daily,
