@@ -23,12 +23,12 @@ st.caption(
 
 def _stage2_evaluate(row, lookback_bars, vol_ratio_threshold_pct, value_floor):
     """
-    2단계(최근 N봉 내 "거래량 전일대비배수" + "거래대금" 동시충족)를 판정한다.
+    2단계(최근 N봉 내 "거래량 VMA20대비배수" + "거래대금" 동시충족)를 판정한다.
     통과한 날이 있으면 그중 가장 최근 날짜를, 없으면 위반폭(%)이 가장 작았던(=가장 근접한)
     날을 함께 반환한다 — 위반폭은 두 조건 각각의 미달률(%) 합으로, 0이면 그날 통과.
     """
     dates = row.get("최근30봉_일자") or []
-    ratios = row.get("최근30봉_거래량배수_전일대비") or []
+    ratios = row.get("최근30봉_거래량배수_VMA20대비") or []
     values = row.get("최근30봉_거래대금") or []
     n = min(lookback_bars, len(dates))
 
@@ -53,7 +53,7 @@ def _stage2_evaluate(row, lookback_bars, vol_ratio_threshold_pct, value_floor):
     })
 
 
-def _compute_near_miss(df, min_consecutive_months, max_rise_from_low_pct,
+def _compute_near_miss(df, min_consecutive_months,
                         max_monthly_ma5_disparity_pct, max_daily_ma60_disparity_pct,
                         require_stage4, top_n=15):
     """
@@ -71,7 +71,7 @@ def _compute_near_miss(df, min_consecutive_months, max_rise_from_low_pct,
     d["v2"] = d["2단계_위반폭"]
     d["c2_통과"] = d["2단계_충족"]
 
-    d["v3"] = (d["120봉저점대비_상승률(%)"] - max_rise_from_low_pct).clip(lower=0) / max_rise_from_low_pct * 100
+    d["v3"] = (d["120봉저점대비_상승률(%)"] - d["_rise_cap"]).clip(lower=0) / d["_rise_cap"] * 100
     d["c3_통과"] = d["v3"] <= 0
 
     d["v4"] = (d["월봉5MA이격도(%)"] - max_monthly_ma5_disparity_pct).clip(lower=0) / max_monthly_ma5_disparity_pct * 100
@@ -119,8 +119,8 @@ with st.sidebar:
         help="이 기간 안에 거래량 배수·거래대금 조건을 동시에 만족한 날이 하루라도 있으면 통과",
     )
     min_volume_ratio_pct = st.number_input(
-        "거래량 배수 (%) 이상 (전일 대비)", min_value=100.0, value=300.0, step=50.0,
-        help="그날 거래량 ÷ 전일 거래량 × 100",
+        "거래량 배수 (%) 이상 (20일 평균(VMA20) 대비)", min_value=100.0, value=300.0, step=50.0,
+        help="그날 거래량 ÷ 직전 20거래일 평균 거래량(VMA20, 당일 포함) × 100",
     )
     large_cap_threshold_eok = st.number_input(
         "대형주 기준 시가총액 (억원) 이상", min_value=0.0, value=10000.0, step=1000.0,
@@ -134,9 +134,12 @@ with st.sidebar:
     )
 
     st.header("⚙️ 3단계 · 상투 분산 배제")
-    max_rise_from_low_pct = st.number_input(
-        "120거래일(약 6개월) 저점 대비 상승률 (%) 초과 시 제외",
-        min_value=0.0, value=80.0, step=5.0,
+    st.caption("120거래일(약 6개월) 저점 대비 상승률 (%) 초과 시 제외 — 시총 규모별 차등 (대형주/소형주 기준은 2단계와 동일)")
+    max_rise_from_low_large_pct = st.number_input(
+        "대형주 기준 (%) 초과 시 제외", min_value=0.0, value=50.0, step=5.0,
+    )
+    max_rise_from_low_small_pct = st.number_input(
+        "소형주 기준 (%) 초과 시 제외", min_value=0.0, value=70.0, step=5.0,
     )
     max_monthly_ma5_disparity_pct = st.number_input(
         "월봉 5MA 이격도 (%) 초과 시 제외", min_value=100.0, value=115.0, step=1.0,
@@ -184,7 +187,7 @@ _RESULT_COLUMN_CONFIG = {
         "수급이벤트일", help="최근 조회 구간 내에서 거래량·거래대금 조건에 가장 근접했던(통과했다면 그중 최근) 날짜",
     ),
     "2단계_근접일_거래량배수": st.column_config.NumberColumn(
-        "이벤트일 거래량배수", format="%.1f배", help="해당일의 거래량 ÷ 전일 거래량",
+        "이벤트일 거래량배수", format="%.1f배", help="해당일의 거래량 ÷ 직전 20거래일 평균 거래량(VMA20)",
     ),
     "2단계_근접일_거래대금": st.column_config.NumberColumn(
         "이벤트일 거래대금(원)", help="해당일의 거래대금 (종가 × 거래량으로 근사)",
@@ -236,6 +239,7 @@ if run_clicked:
 
     is_large = df["시가총액"] >= large_cap_threshold
     df["_value_floor"] = is_large.map({True: min_value_large, False: min_value_small})
+    df["_rise_cap"] = is_large.map({True: max_rise_from_low_large_pct, False: max_rise_from_low_small_pct})
 
     stage2 = df.apply(lambda r: _stage2_evaluate(r, lookback_bars, min_volume_ratio_pct, r["_value_floor"]), axis=1)
     df = pd.concat([df, stage2], axis=1)
@@ -243,7 +247,7 @@ if run_clicked:
     cond = (
         (df["5개월선_연속상회월수"] >= min_consecutive_months)
         & (df["2단계_충족"])
-        & (df["120봉저점대비_상승률(%)"] <= max_rise_from_low_pct)
+        & (df["120봉저점대비_상승률(%)"] <= df["_rise_cap"])
         & (df["월봉5MA이격도(%)"] <= max_monthly_ma5_disparity_pct)
         & (df["일봉60MA이격도(%)"] <= max_daily_ma60_disparity_pct)
     )
@@ -262,7 +266,7 @@ if run_clicked:
         near_miss_df = None
     else:
         near_miss_df = _compute_near_miss(
-            df, min_consecutive_months, max_rise_from_low_pct,
+            df, min_consecutive_months,
             max_monthly_ma5_disparity_pct, max_daily_ma60_disparity_pct, require_stage4,
         )
     st.session_state["chart_screening_df"] = df_screened
@@ -291,7 +295,7 @@ else:
         ],
         column_config=_RESULT_COLUMN_CONFIG,
     )
-    csv_df = df_final.drop(columns=["_종목명_plain", "_value_floor"], errors="ignore").copy()
+    csv_df = df_final.drop(columns=["_종목명_plain", "_value_floor", "_rise_cap"], errors="ignore").copy()
     if "_종목명_plain" in df_final.columns:
         csv_df["종목명"] = df_final["_종목명_plain"]
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8-sig")
@@ -330,12 +334,12 @@ with st.expander("ℹ️ 조건 설명 (1~4단계)"):
     st.markdown(
         """
 - **1단계 · 장기 추세 필터**: 월봉 종가가 5개월 이동평균선 위에서 연속으로 머문 개월 수(이번달 포함, 기본 3개월 이상)
-- **2단계 · 수급 유효성 검증**: 최근 N봉(기본 20봉) 이내에 "그날 거래량이 전일 대비 300% 이상"이면서
+- **2단계 · 수급 유효성 검증**: 최근 N봉(기본 20봉) 이내에 "그날 거래량이 20일 평균(VMA20) 대비 300% 이상"이면서
   "그날 거래대금이 시총 규모별 기준(대형주 1,000억/소형주 500억) 이상"인 날이 동시에 1회 이상 있었는지 확인
   (당일이 아니어도, 최근 며칠 내 그런 수급 이벤트가 있었으면 통과 — 이벤트 발생일과 당일 시점의 다른 조건이
   같은 날일 필요는 없습니다)
-- **3단계 · 상투 분산 배제**: 120거래일(약 6개월) 저점 대비 상승률(기본 80% 이하), 월봉 5MA 이격도(기본 115% 이하),
-  일봉 60MA 이격도(기본 112% 이하) — 평균회귀 급락 리스크 회피
+- **3단계 · 상투 분산 배제**: 120거래일(약 6개월) 저점 대비 상승률(시총 규모별 차등 — 대형주 기본 50% 이하,
+  소형주 기본 70% 이하), 월봉 5MA 이격도(기본 115% 이하), 일봉 60MA 이격도(기본 112% 이하) — 평균회귀 급락 리스크 회피
 - **4단계 · 재반등 확인**: 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일 종가가 시가보다 높으면(양봉) 통과
   — 눌림목 이후 재반등하는 흐름인지 확인
 - **조건에 가장 근접한 종목**: 통과 종목이 0건일 때만 하단에 표시됩니다. 각 조건을 얼마나 못 미쳤는지(%)를

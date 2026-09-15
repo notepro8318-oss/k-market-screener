@@ -2,9 +2,9 @@
 "차트 분석 종목 찾기" - 사용자가 최종 확정한 4단계 시스템 트레이딩 스크리닝 모듈.
 
 1단계(장기 추세): 월봉 종가가 5개월 이동평균선 위에서 3개월 이상 연속 유지
-2단계(수급 유효성): 최근 20거래일(봉) 이내에 "그날 거래량이 전일 대비 300% 이상"이면서
-                  "그날 거래대금이 시총 규모별 기준(대형주 1,000억/소형주 500억) 이상"인
-                  날이 동시에 1회 이상 있었는지
+2단계(수급 유효성): 최근 20거래일(봉) 이내에 "그날 거래량이 직전 20일 평균 거래량(VMA20) 대비
+                  300% 이상"이면서 "그날 거래대금이 시총 규모별 기준(대형주 1,000억/소형주
+                  500억) 이상"인 날이 동시에 1회 이상 있었는지
 3단계(상투 분산 배제): 120거래일(약 6개월) 저점 대비 현재가 상승률, 월봉 5MA/일봉 60MA 이격도
 4단계(재반등 확인): 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일이 양봉(종가>시가)
 
@@ -19,7 +19,7 @@ DART 재무데이터가 필요 없어 OpenDART의 해외 IP 차단 문제는 없
 
 캐시에는 최종 통과 여부가 아니라 종목별 계산된 원본 지표만 저장한다. 특히 2단계는 "최근 20봉
 중 1회 이상"처럼 화면에서 조절 가능해야 하는 구간 조건이라, 배치 단계에서 20봉으로 미리
-확정하지 않고 여유 있게 30봉치의 일별 (거래량_전일대비배수, 거래대금) 원본 시계열을 저장해
+확정하지 않고 여유 있게 30봉치의 일별 (거래량_VMA20대비배수, 거래대금) 원본 시계열을 저장해
 화면 슬라이더로 봉 수·배수·거래대금 기준을 자유롭게 조절할 수 있게 한다.
 """
 
@@ -109,13 +109,16 @@ def evaluate_stock(ticker, name, market, marcap, df):
     if len(close) < 120:  # 120봉 저점 계산에 필요한 최소치
         return None
 
-    # --- 2단계: 최근 N봉(최대 30봉 저장) 일별 (거래량 전일대비배수, 거래대금) 원본 시계열 ---
-    day_over_day_vol_ratio = volume / volume.shift(1)
+    # --- 2단계: 최근 N봉(최대 30봉 저장) 일별 (거래량 VMA20대비배수, 거래대금) 원본 시계열 ---
+    # VMA20(20일 거래량 이동평균)은 일반적인 차트 지표와 동일하게 당일 거래량을 포함한
+    # 20거래일 평균으로 계산한다(HTS/차트에서 그려지는 거래량 이동평균선과 동일한 정의).
+    vma20 = volume.rolling(20).mean()
+    vol_ratio_vs_vma20 = volume / vma20
     recent_idx = close.index[-_LOOKBACK_STORE_BARS:]
     recent_dates = [d.strftime("%Y-%m-%d") for d in recent_idx]
     recent_vol_ratio = [
         round(float(v), 2) if pd.notna(v) else None
-        for v in day_over_day_vol_ratio.reindex(recent_idx)
+        for v in vol_ratio_vs_vma20.reindex(recent_idx)
     ]
     recent_value = [
         round(float(v)) if pd.notna(v) else None
@@ -167,7 +170,7 @@ def evaluate_stock(ticker, name, market, marcap, df):
         "시총구분": ("대형주" if marcap is not None and marcap >= LARGE_CAP_THRESHOLD else "소형주"),
         "5개월선_연속상회월수": streak,
         f"최근{_LOOKBACK_STORE_BARS}봉_일자": recent_dates,
-        f"최근{_LOOKBACK_STORE_BARS}봉_거래량배수_전일대비": recent_vol_ratio,
+        f"최근{_LOOKBACK_STORE_BARS}봉_거래량배수_VMA20대비": recent_vol_ratio,
         f"최근{_LOOKBACK_STORE_BARS}봉_거래대금": recent_value,
         "120봉저점대비_상승률(%)": round(rise_from_120low_pct, 2) if rise_from_120low_pct is not None else None,
         "월봉5MA이격도(%)": round(monthly_ma5_disparity_pct, 2) if monthly_ma5_disparity_pct is not None else None,
