@@ -140,12 +140,20 @@ def evaluate_stock(ticker, name, market, marcap, df):
         if pd.notna(latest_ma60_daily) and latest_ma60_daily > 0 else None
     )
 
-    # --- 4단계: 당일 5일선 이상 여부 / 당일 양봉 여부 ---
+    # --- 4단계: 당일 5일선 이상 여부 / 당일 양봉 여부 (이격도·등락률은 "근접 종목" 산출용 연속값) ---
     ma5_daily = close.rolling(5).mean()
     latest_ma5_daily = ma5_daily.iloc[-1]
-    above_ma5_daily = bool(pd.notna(latest_ma5_daily) and latest_close >= latest_ma5_daily)
+    daily_ma5_disparity_pct = (
+        (latest_close / latest_ma5_daily * 100)
+        if pd.notna(latest_ma5_daily) and latest_ma5_daily > 0 else None
+    )
+    above_ma5_daily = bool(daily_ma5_disparity_pct is not None and daily_ma5_disparity_pct >= 100)
     latest_open = open_.iloc[-1]
-    bullish_candle = bool(pd.notna(latest_open) and latest_close > latest_open)
+    open_to_close_pct = (
+        (latest_close / latest_open - 1) * 100
+        if pd.notna(latest_open) and latest_open > 0 else None
+    )
+    bullish_candle = bool(open_to_close_pct is not None and open_to_close_pct > 0)
 
     latest_date = close.index[-1]
     latest_value = trading_value.iloc[-1]
@@ -165,7 +173,9 @@ def evaluate_stock(ticker, name, market, marcap, df):
         "월봉5MA이격도(%)": round(monthly_ma5_disparity_pct, 2) if monthly_ma5_disparity_pct is not None else None,
         "일봉60MA이격도(%)": round(daily_ma60_disparity_pct, 2) if daily_ma60_disparity_pct is not None else None,
         "당일5일선이상": above_ma5_daily,
+        "당일5일선이격도(%)": round(daily_ma5_disparity_pct, 2) if daily_ma5_disparity_pct is not None else None,
         "당일양봉": bullish_candle,
+        "당일시가대비등락률(%)": round(open_to_close_pct, 2) if open_to_close_pct is not None else None,
         "당일_거래대금": round(latest_value) if pd.notna(latest_value) else None,
         "현재가": round(latest_close) if pd.notna(latest_close) else None,
         "기준일": latest_date.strftime("%Y-%m-%d"),
