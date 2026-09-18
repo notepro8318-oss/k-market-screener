@@ -91,7 +91,9 @@ def _stage37_evaluate(row):
 
 def _compute_near_miss(df, min_consecutive_months, min_gap_from_high_pct, max_gap_from_high_pct,
                         max_monthly_ma5_disparity_pct, max_daily_ma60_disparity_pct,
-                        max_wick_body_pct, max_pullback_volume_pct, require_stage4, top_n=15):
+                        max_wick_body_pct, max_pullback_volume_pct, require_stage4,
+                        use_stage1, use_stage2, use_c3, use_c4, use_c5, use_c6,
+                        effective_use_c7, effective_use_c9, top_n=15):
     """
     조건을 통과하는 종목이 하나도 없을 때, 지금 설정된 조건 값 기준으로 "가장 근접한" 종목을
     순위로 매긴다. 각 조건마다 정규화된 위반폭(%)을 계산해 합산한 뒤(적을수록 근접), 그 합으로
@@ -102,6 +104,9 @@ def _compute_near_miss(df, min_consecutive_months, min_gap_from_high_pct, max_ga
     #7·#9는 기준봉(2단계 통과일)이 있어야만 의미가 있는 조건이라, 2단계 자체가 아직 통과하지
     못한 종목(대다수의 근접 후보)에는 0(중립)으로 채워 2단계 위반폭과 중복으로 불이익을 주지
     않는다.
+
+    사이드바에서 체크 해제한(사용하지 않는) 조건은 각 종목별 값은 그대로 표시하되, 실패조건수·
+    종합근접도점수 계산에서는 제외한다.
     """
     d = df.copy()
     band_width = max(max_gap_from_high_pct - min_gap_from_high_pct, 1e-9)
@@ -144,10 +149,21 @@ def _compute_near_miss(df, min_consecutive_months, min_gap_from_high_pct, max_ga
         d["v10"] = 0.0
         d["c10_통과"] = True
 
-    cond_cols = ["c1_통과", "c2_통과", "c3_통과", "c4_통과", "c5_통과", "c6_통과", "c7_통과", "c9_통과", "c10_통과"]
-    viol_cols = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v9", "v10"]
-    d["실패조건수"] = len(cond_cols) - d[cond_cols].sum(axis=1)
-    d["종합근접도점수"] = d[viol_cols].sum(axis=1)
+    enabled = {
+        "c1_통과": use_stage1, "v1": use_stage1,
+        "c2_통과": use_stage2, "v2": use_stage2,
+        "c3_통과": use_c3, "v3": use_c3,
+        "c4_통과": use_c4, "v4": use_c4,
+        "c5_통과": use_c5, "v5": use_c5,
+        "c6_통과": use_c6, "v6": use_c6,
+        "c7_통과": effective_use_c7, "v7": effective_use_c7,
+        "c9_통과": effective_use_c9, "v9": effective_use_c9,
+        "c10_통과": require_stage4, "v10": require_stage4,
+    }
+    cond_cols = [c for c in ["c1_통과", "c2_통과", "c3_통과", "c4_통과", "c5_통과", "c6_통과", "c7_통과", "c9_통과", "c10_통과"] if enabled[c]]
+    viol_cols = [v for v in ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v9", "v10"] if enabled[v]]
+    d["실패조건수"] = (len(cond_cols) - d[cond_cols].sum(axis=1)) if cond_cols else 0
+    d["종합근접도점수"] = d[viol_cols].sum(axis=1) if viol_cols else 0.0
 
     near = d.sort_values("종합근접도점수").head(top_n).copy()
     near["시가총액(억)"] = (near["시가총액"] / 100_000_000).round(0)
@@ -160,18 +176,23 @@ def _compute_near_miss(df, min_consecutive_months, min_gap_from_high_pct, max_ga
 
 
 with st.sidebar:
+    st.caption("각 조건 이름 앞의 체크박스를 해제하면 그 조건은 스크리닝에서 제외됩니다.")
+
     st.header("⚙️ 1단계 · 장기 추세 필터")
+    use_stage1 = st.checkbox("1단계 조건 사용 (5개월선 연속 상회)", value=True, key="use_stage1")
     min_consecutive_months = st.slider(
         "월봉 종가가 5개월선 위에서 연속으로 머문 개월 수 (이상)",
-        min_value=1, max_value=12, value=3,
+        min_value=1, max_value=12, value=3, disabled=not use_stage1,
         help="월봉 종가가 5개월 이동평균선 위에 있었던 가장 최근부터의 연속 개월 수(이번달 포함) 기준",
     )
 
     st.header("⚙️ 2단계 · 수급 유효성 검증")
+    use_stage2 = st.checkbox("2단계 조건 사용 (거래량·거래대금 동시 충족)", value=True, key="use_stage2")
     lookback_bars = st.slider(
         "최근 며칠(봉) 이내에 발생했는지 확인 (최대 30봉)",
         min_value=5, max_value=30, value=20,
-        help="이 기간 안에 거래량 배수·거래대금 조건을 동시에 만족한 날(기준봉)이 하루라도 있으면 통과",
+        help="이 기간 안에 거래량 배수·거래대금 조건을 동시에 만족한 날(기준봉)이 하루라도 있으면 통과. "
+        "2단계를 꺼도 #7·#9가 쓰는 '기준봉'을 찾는 데 계속 사용됩니다.",
     )
     min_volume_ratio_pct = st.number_input(
         "거래량 배수 (%) 이상 (20일 평균(VMA20) 대비)", min_value=100.0, value=300.0, step=50.0,
@@ -189,44 +210,65 @@ with st.sidebar:
     )
 
     st.header("⚙️ 3단계 · 상투 분산 배제")
+    use_c3 = st.checkbox("120거래일 저점 대비 상승률 조건 사용", value=True, key="use_c3")
     st.caption("120거래일(약 6개월) 저점 대비 상승률 (%) 초과 시 제외 — 시총 규모별 차등 (대형주/소형주 기준은 2단계와 동일)")
     max_rise_from_low_large_pct = st.number_input(
-        "대형주 기준 (%) 초과 시 제외", min_value=0.0, value=50.0, step=5.0,
+        "대형주 기준 (%) 초과 시 제외", min_value=0.0, value=50.0, step=5.0, disabled=not use_c3,
     )
     max_rise_from_low_small_pct = st.number_input(
-        "소형주 기준 (%) 초과 시 제외", min_value=0.0, value=70.0, step=5.0,
+        "소형주 기준 (%) 초과 시 제외", min_value=0.0, value=70.0, step=5.0, disabled=not use_c3,
     )
+
+    use_c4 = st.checkbox("250거래일 신고가 대비 괴리율 조건 사용", value=True, key="use_c4")
     st.caption("250거래일(약 52주) 신고가 대비 현재가 괴리율 (%) — 이 범위 밖이면 제외")
     min_gap_from_high_pct = st.number_input(
-        "괴리율 하한 (%)", value=-35.0, step=5.0,
+        "괴리율 하한 (%)", value=-35.0, step=5.0, disabled=not use_c4,
         help="음수일수록 신고가에서 더 멀리 떨어진 상태. 이보다 더 낮으면(더 많이 빠졌으면) 제외",
     )
     max_gap_from_high_pct = st.number_input(
-        "괴리율 상한 (%)", value=-15.0, step=5.0,
+        "괴리율 상한 (%)", value=-15.0, step=5.0, disabled=not use_c4,
         help="0에 가까울수록 신고가에 근접. 이보다 높으면(신고가에 너무 가까우면) 제외",
     )
+
+    use_c5 = st.checkbox("월봉 5MA 이격도 조건 사용", value=True, key="use_c5")
     max_monthly_ma5_disparity_pct = st.number_input(
-        "월봉 5MA 이격도 (%) 초과 시 제외", min_value=100.0, value=115.0, step=1.0,
+        "월봉 5MA 이격도 (%) 초과 시 제외", min_value=100.0, value=115.0, step=1.0, disabled=not use_c5,
         help="월봉 종가 ÷ 5개월 이동평균선 × 100",
     )
+
+    use_c6 = st.checkbox("일봉 60MA 이격도 조건 사용", value=True, key="use_c6")
     max_daily_ma60_disparity_pct = st.number_input(
-        "일봉 60MA 이격도 (%) 초과 시 제외", min_value=100.0, value=112.0, step=1.0,
+        "일봉 60MA 이격도 (%) 초과 시 제외", min_value=100.0, value=112.0, step=1.0, disabled=not use_c6,
         help="현재가 ÷ 일봉 60일 이동평균선 × 100",
     )
+
+    use_c7 = st.checkbox(
+        "기준봉 윗꼬리/몸통 비율 조건 사용", value=True, key="use_c7", disabled=not use_stage2,
+        help="기준봉은 2단계에서 찾으므로, 2단계 조건을 꺼두면 이 조건도 함께 꺼집니다.",
+    )
+    effective_use_c7 = use_c7 and use_stage2
     max_wick_body_pct = st.number_input(
         "기준봉 윗꼬리/몸통 비율 (%) 초과 시 제외", min_value=0.0, value=100.0, step=10.0,
+        disabled=not effective_use_c7,
         help="기준봉(2단계 이벤트일) 캔들의 (고가-max(시가,종가)) ÷ |종가-시가| × 100. "
         "100% 초과면 윗꼬리가 몸통보다 길다는 뜻으로, 고점 매도 압력(세력 이탈) 신호로 봅니다.",
     )
+
+    use_c9 = st.checkbox(
+        "눌림목 평균거래량/기준봉거래량 비율 조건 사용", value=True, key="use_c9", disabled=not use_stage2,
+        help="기준봉은 2단계에서 찾으므로, 2단계 조건을 꺼두면 이 조건도 함께 꺼집니다.",
+    )
+    effective_use_c9 = use_c9 and use_stage2
     max_pullback_volume_pct = st.number_input(
         "눌림목 평균거래량/기준봉거래량 비율 (%) 초과 시 제외", min_value=0.0, value=30.0, step=5.0,
+        disabled=not effective_use_c9,
         help="기준봉 익일(T+1)부터 어제(T-1)까지의 일평균 거래량 ÷ 기준봉 거래량 × 100. "
         "기준봉이 오늘이거나 어제라 눌림목 구간이 아직 없으면 검증 불가로 제외됩니다.",
     )
 
     st.header("⚙️ 4단계 · 재반등 확인")
     require_stage4 = st.checkbox(
-        "당일 5일선 이상 또는 당일 양봉 조건 적용", value=True,
+        "4단계 조건 사용 (당일 5일선 이상 또는 당일 양봉)", value=True,
         help="눌림목 이후 재반등 신호 — 당일 종가가 일봉 5일 이동평균선 이상이거나, 당일 종가가 시가보다 높으면(양봉) 통과",
     )
 
@@ -300,7 +342,7 @@ _RESULT_COLUMN_CONFIG = {
         "기준일", help="이 지표들을 계산한 가장 최근 거래일",
     ),
     "실패조건수": st.column_config.NumberColumn(
-        "실패조건수", help="1~4단계 총 9개 세부조건 중 통과하지 못한 개수 (적을수록 근접)",
+        "실패조건수", help="사이드바에서 체크(사용)한 세부조건 중 통과하지 못한 개수 (적을수록 근접)",
     ),
     "종합근접도점수": st.column_config.NumberColumn(
         "근접도점수", format="%.1f", help="각 조건의 미달률(%)을 합산한 값 — 작을수록 조건 값에 더 가까움",
@@ -342,21 +384,25 @@ if run_clicked:
     stage37 = df.apply(_stage37_evaluate, axis=1)
     df = pd.concat([df, stage37], axis=1)
 
-    cond = (
-        (df["5개월선_연속상회월수"] >= min_consecutive_months)
-        & (df["2단계_충족"])
-        & (df["120봉저점대비_상승률(%)"] <= df["_rise_cap"])
-        & (df["250봉고점대비_괴리율(%)"] >= min_gap_from_high_pct)
-        & (df["250봉고점대비_괴리율(%)"] <= max_gap_from_high_pct)
-        & (df["월봉5MA이격도(%)"] <= max_monthly_ma5_disparity_pct)
-        & (df["일봉60MA이격도(%)"] <= max_daily_ma60_disparity_pct)
-        & (df["7단계_윗꼬리비율(%)"].notna())
-        & (df["7단계_윗꼬리비율(%)"] <= max_wick_body_pct)
-        & (df["9단계_구간유효"])
-        & (df["9단계_눌림목거래량비율(%)"] <= max_pullback_volume_pct)
-    )
+    cond = pd.Series(True, index=df.index)
+    if use_stage1:
+        cond &= df["5개월선_연속상회월수"] >= min_consecutive_months
+    if use_stage2:
+        cond &= df["2단계_충족"]
+    if use_c3:
+        cond &= df["120봉저점대비_상승률(%)"] <= df["_rise_cap"]
+    if use_c4:
+        cond &= (df["250봉고점대비_괴리율(%)"] >= min_gap_from_high_pct) & (df["250봉고점대비_괴리율(%)"] <= max_gap_from_high_pct)
+    if use_c5:
+        cond &= df["월봉5MA이격도(%)"] <= max_monthly_ma5_disparity_pct
+    if use_c6:
+        cond &= df["일봉60MA이격도(%)"] <= max_daily_ma60_disparity_pct
+    if effective_use_c7:
+        cond &= df["7단계_윗꼬리비율(%)"].notna() & (df["7단계_윗꼬리비율(%)"] <= max_wick_body_pct)
+    if effective_use_c9:
+        cond &= df["9단계_구간유효"] & (df["9단계_눌림목거래량비율(%)"] <= max_pullback_volume_pct)
     if require_stage4:
-        cond = cond & (df["당일5일선이상"] | df["당일양봉"])
+        cond &= (df["당일5일선이상"] | df["당일양봉"])
 
     df_screened = df[cond].copy()
     if not df_screened.empty:
@@ -373,6 +419,8 @@ if run_clicked:
             df, min_consecutive_months, min_gap_from_high_pct, max_gap_from_high_pct,
             max_monthly_ma5_disparity_pct, max_daily_ma60_disparity_pct,
             max_wick_body_pct, max_pullback_volume_pct, require_stage4,
+            use_stage1, use_stage2, use_c3, use_c4, use_c5, use_c6,
+            effective_use_c7, effective_use_c9,
         )
     st.session_state["chart_screening_df"] = df_screened
     st.session_state["chart_near_miss_df"] = near_miss_df
@@ -409,11 +457,11 @@ if df_final is not None and df_final.empty and near_miss_final is not None and n
     st.divider()
     st.markdown("### 🔎 조건에 가장 근접한 종목")
     st.caption(
-        "지금 설정된 조건 값 기준으로, 9개 세부조건(추세·수급·상투배제 5개·재반등)의 미달률을 합산해 "
-        "가장 가까운 순으로 정렬했습니다. 실패조건수가 적어도 그 조건을 크게 못 미치면 근접도점수가 "
-        "나빠질 수 있어(예: 나머지는 다 통과해도 거래량 급증이 전혀 없는 대형주), 근접도점수를 기본 "
-        "정렬 기준으로 씁니다. 기준봉(2단계)이 아직 없는 종목은 #7·#9(기준봉 캔들·눌림목 거래량) "
-        "위반폭을 0으로 두어 2단계 미달과 중복으로 불이익을 주지 않습니다."
+        "지금 체크(사용)된 조건들만 대상으로, 각 조건의 미달률을 합산해 가장 가까운 순으로 정렬했습니다. "
+        "체크 해제한 조건은 실패조건수·근접도점수 계산에서 빠집니다. 실패조건수가 적어도 그 조건을 크게 "
+        "못 미치면 근접도점수가 나빠질 수 있어(예: 나머지는 다 통과해도 거래량 급증이 전혀 없는 대형주), "
+        "근접도점수를 기본 정렬 기준으로 씁니다. 기준봉(2단계)이 아직 없는 종목은 #7·#9(기준봉 캔들·눌림목 "
+        "거래량) 위반폭을 0으로 두어 2단계 미달과 중복으로 불이익을 주지 않습니다."
     )
     st.dataframe(
         near_miss_final,
@@ -445,6 +493,9 @@ with st.expander("ℹ️ 조건 설명 (1~4단계)"):
   — 눌림목 이후 재반등하는 흐름인지 확인
 - **조건에 가장 근접한 종목**: 통과 종목이 0건일 때만 하단에 표시됩니다. 각 조건을 얼마나 못 미쳤는지(%)를
   합산한 점수로 순위를 매긴 것으로, 실제로 조건을 통과한 것은 아닙니다.
+- **조건별 사용 체크박스**: 사이드바의 각 조건 이름 앞 체크박스를 해제하면 그 조건은 스크리닝(및 근접도
+  점수 계산)에서 완전히 제외됩니다. 단, #7(기준봉 윗꼬리)·#9(눌림목 거래량)는 2단계에서 찾은 기준봉이
+  있어야 계산 가능한 조건이라, 2단계 체크를 해제하면 두 조건도 함께 자동으로 꺼집니다.
         """
     )
 
