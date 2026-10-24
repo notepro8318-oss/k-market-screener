@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import streamlit as st
 
@@ -203,13 +205,190 @@ else:
             ),
         },
     )
-    csv_df = df_final.drop(columns=["_종목명_plain"], errors="ignore").copy()
+    financials_5y_cols = [
+        "연도_5y", "매출액_5y", "영업이익_5y", "경상이익_5y", "경상이익률_5y",
+        "CFO_5y", "CFI_5y", "CFF_5y", "FCF_5y",
+        "부채비율_5y", "당좌비율_5y", "이자보상배율_5y", "유보율_5y",
+        "매출성장률_5y", "매출채권회전율_5y", "재고자산회전율_5y",
+    ]
+    csv_df = df_final.drop(columns=financials_5y_cols, errors="ignore").copy()
     if "_종목명_plain" in df_final.columns:
         csv_df["종목명"] = df_final["_종목명_plain"]
-    csv_bytes = csv_df.to_csv(index=False).encode("utf-8-sig")
+    csv_bytes = csv_df.drop(columns=["_종목명_plain"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "📥 CSV 다운로드",
         data=csv_bytes,
         file_name="Korea_Growth_Stocks.csv",
         mime="text/csv",
     )
+
+    st.subheader("📊 5년 재무 상세")
+    if "연도_5y" not in df_final.columns:
+        st.info("캐시가 아직 5년 재무 데이터를 포함하기 전 버전입니다. 캐시가 갱신되면 표시됩니다.")
+    else:
+        select_labels = (df_final["_종목명_plain"] + " (" + df_final["종목코드"] + ")").tolist()
+        picked_label = st.selectbox("종목 선택", select_labels, key="growth_detail_stock_picker")
+        picked_row = df_final.iloc[select_labels.index(picked_label)]
+
+        years = picked_row["연도_5y"]
+        if not years:
+            st.info(
+                "이 종목은 5년치 재무 데이터가 없습니다 "
+                "(상장 5년 미만이거나, 은행·금융지주 등 계정 구조가 크게 다른 업종일 수 있습니다)."
+            )
+        else:
+            def _ceil(val, decimals=1):
+                """소수점 이하 절상(올림). math.ceil은 항상 +무한대 방향으로 반올림한다."""
+                factor = 10 ** decimals
+                return math.ceil(val * factor) / factor
+
+            detail_df = pd.DataFrame({
+                "연도": [str(y) for y in years],
+                "매출액(억)": [_ceil(v / 100_000_000) for v in picked_row["매출액_5y"]],
+                "경상이익(억)": [_ceil(v / 100_000_000) for v in picked_row["경상이익_5y"]],
+                "경상이익률(%)": [_ceil(v, 2) for v in picked_row["경상이익률_5y"]],
+                "영업활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFO_5y"]],
+                "투자활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFI_5y"]],
+                "재무활동CF(억)": [_ceil(v / 100_000_000) for v in picked_row["CFF_5y"]],
+                "잉여현금흐름(억)": [_ceil(v / 100_000_000) for v in picked_row["FCF_5y"]],
+            })
+            st.dataframe(
+                detail_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "연도": st.column_config.TextColumn(
+                        "연도", help="사업보고서 기준 결산연도",
+                    ),
+                    "매출액(억)": st.column_config.NumberColumn(
+                        "매출액(억)", help="해당 사업연도 매출액 (단위: 억원)",
+                    ),
+                    "경상이익(억)": st.column_config.NumberColumn(
+                        "경상이익(억)",
+                        help="현행 K-IFRS엔 '경상이익' 계정이 없어 세전이익(법인세비용차감전순이익)으로 대체 (단위: 억원)",
+                    ),
+                    "경상이익률(%)": st.column_config.NumberColumn(
+                        "경상이익률(%)", help="경상이익(세전이익) ÷ 매출액 × 100",
+                    ),
+                    "영업활동CF(억)": st.column_config.NumberColumn(
+                        "영업활동CF(억)", help="영업활동현금흐름 (단위: 억원). 본업에서 실제로 들어오고 나간 현금",
+                    ),
+                    "투자활동CF(억)": st.column_config.NumberColumn(
+                        "투자활동CF(억)", help="투자활동현금흐름 (단위: 억원). 설비투자·자산 취득/처분 등에 따른 현금 흐름",
+                    ),
+                    "재무활동CF(억)": st.column_config.NumberColumn(
+                        "재무활동CF(억)", help="재무활동현금흐름 (단위: 억원). 차입·상환·배당·증자 등에 따른 현금 흐름",
+                    ),
+                    "잉여현금흐름(억)": st.column_config.NumberColumn(
+                        "잉여현금흐름(억)", help="FCF ≈ 영업활동현금흐름 + 투자활동현금흐름 (단위: 억원)",
+                    ),
+                },
+            )
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                st.line_chart(detail_df.set_index("연도")[["매출액(억)", "경상이익(억)"]])
+            with chart_col2:
+                st.line_chart(
+                    detail_df.set_index("연도")[
+                        ["영업활동CF(억)", "투자활동CF(억)", "재무활동CF(억)", "잉여현금흐름(억)"]
+                    ]
+                )
+            st.caption(
+                "경상이익은 세전이익(법인세비용차감전순이익)으로 대체한 값이며, "
+                "잉여현금흐름(FCF)은 영업활동현금흐름 + 투자활동현금흐름으로 근사한 값입니다."
+            )
+
+            st.subheader("🧾 기업분석 체크리스트")
+            if "부채비율_5y" not in df_final.columns:
+                st.info("캐시가 아직 체크리스트 데이터를 포함하기 전 버전입니다. 캐시가 갱신되면 표시됩니다.")
+            else:
+                def _last(col):
+                    vals = picked_row[col]
+                    return vals[-1] if vals else None
+
+                def _fmt(val, unit):
+                    if val is None:
+                        return "데이터 없음"
+                    if unit == "회" and val == 0:
+                        return "해당 없음"
+                    return f"{val:,.2f}{unit}"
+
+                def _verdict(val, ok):
+                    if val is None or ok is None:
+                        return "➖"
+                    return "✅" if ok else "❌"
+
+                debt_ratio = _last("부채비율_5y")
+                quick_ratio = _last("당좌비율_5y")
+                interest_cov = _last("이자보상배율_5y")
+                reserve_ratio = _last("유보율_5y")
+                revenue_growth = _last("매출성장률_5y")
+                receivables_turnover = _last("매출채권회전율_5y")
+                inventory_turnover = _last("재고자산회전율_5y")
+                def _none_if_missing(val):
+                    if val is None or (isinstance(val, float) and pd.isna(val)) or val == "":
+                        return None
+                    return val
+
+                industry_name = _none_if_missing(picked_row.get("업종매칭명"))
+                receivables_industry_avg = _none_if_missing(picked_row.get("매출채권회전율_업계평균"))
+                inventory_industry_avg = _none_if_missing(picked_row.get("재고자산회전율_업계평균"))
+                fcf_latest = _last("FCF_5y")
+                fcf_latest_eok = round(fcf_latest / 100_000_000, 1) if fcf_latest is not None else None
+                opm_ttm = picked_row["영업이익률(%)"]
+                roe_ttm = picked_row["ROE(%)"]
+
+                checklist_rows = [
+                    ("건전성", "부채비율", debt_ratio, "%", "150% 이하",
+                     debt_ratio is not None and debt_ratio <= 150,
+                     "200% 이하도 괜찮으나 금리 인상기엔 150% 이하가 안전 (금융업·항공해운업 제외)"),
+                    ("건전성", "당좌비율", quick_ratio, "%", "100% 이상",
+                     quick_ratio is not None and quick_ratio >= 100,
+                     "1년 내 갚아야 할 빚 대비 당장 현금화 가능한 자산이 충분한지"),
+                    ("건전성", "이자보상배율 [핵심]", interest_cov, "회", "1.5배 이상",
+                     interest_cov is not None and interest_cov >= 1.5,
+                     "1 미만이면 번 돈으로 이자도 못 낸다는 뜻. 3년 연속 1 미만이면 투자 보류 권장"),
+                    ("건전성", "유보율", reserve_ratio, "%", "500% 이상",
+                     reserve_ratio is not None and reserve_ratio >= 500,
+                     "높을수록 위기 대처 능력이 좋고 무상증자 가능성도 존재"),
+                    ("수익성", "영업이익률(TTM)", opm_ttm, "%", "8~10% 이상",
+                     opm_ttm is not None and opm_ttm >= 8,
+                     "한국 제조업 평균 5~8%. 10% 이상이면 원가 통제력·브랜드 파워가 뛰어남"),
+                    ("수익성", "ROE(TTM)", roe_ttm, "%", "8% 이상 꾸준히",
+                     roe_ttm is not None and roe_ttm >= 8,
+                     "주주의 돈으로 얼마나 수익을 내는지. 수년간 8~10% 이상 유지하면 우량주"),
+                    ("수익성", "잉여현금흐름(FCF)", fcf_latest_eok, "억원", "플러스(+) 유지",
+                     fcf_latest_eok is not None and fcf_latest_eok > 0,
+                     "장부상 이익이 아닌 실제로 남은 현금. 배당·신규 투자의 원천"),
+                    ("성장성", "매출 성장률", revenue_growth, "%", "5~10% 이상",
+                     revenue_growth is not None and revenue_growth >= 5,
+                     "물가 상승률보다 매출이 안 오르면 사실상 역성장"),
+                    ("성장성", "매출채권회전율", receivables_turnover, "회",
+                     f"업종평균({industry_name}) {receivables_industry_avg:,.2f}회 이상"
+                     if receivables_industry_avg is not None else "동종업계 대비 높을수록 좋음 (업종 평균 데이터 없음)",
+                     None if not receivables_industry_avg or not receivables_turnover
+                     else receivables_turnover >= receivables_industry_avg,
+                     "낮으면 물건은 팔았는데 돈을 못 받고(외상) 있다는 경고 신호. "
+                     "업종 평균은 한국은행 기업경영분석(ECOS) 기준"),
+                    ("성장성", "재고자산회전율", inventory_turnover, "회",
+                     f"업종평균({industry_name}) {inventory_industry_avg:,.2f}회 이상"
+                     if inventory_industry_avg is not None else "동종업계 대비 높을수록 좋음 (업종 평균 데이터 없음)",
+                     None if not inventory_industry_avg or not inventory_turnover
+                     else inventory_turnover >= inventory_industry_avg,
+                     "하락 + 재고 급증 = 악성 재고 신호 (반도체·의류 등 필수 확인). "
+                     "업종 평균은 한국은행 기업경영분석(ECOS) 기준"),
+                ]
+                checklist_df = pd.DataFrame([
+                    {
+                        "구분": category, "지표": name,
+                        "값": _fmt(value, unit), "기준": criterion,
+                        "통과": _verdict(value, ok), "체크 포인트": note,
+                    }
+                    for category, name, value, unit, criterion, ok, note in checklist_rows
+                ])
+                st.dataframe(checklist_df, use_container_width=True, hide_index=True)
+                st.caption(
+                    "체크 항목은 가장 최근 확정된 사업연도(영업이익률·ROE는 TTM) 기준이며, "
+                    "매출채권/재고자산 회전율은 업종 평균 데이터가 없어 통과 여부를 판정하지 않고 값만 보여줍니다. "
+                    "'해당 없음'은 재고·매출채권이 거의 없는 업종(서비스업 등)일 수 있습니다."
+                )

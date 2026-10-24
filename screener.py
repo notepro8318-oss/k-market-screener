@@ -1120,7 +1120,18 @@ def run_growth_pipeline_from_cache(criteria):
     if "시장구분" not in df.columns:
         df["시장구분"] = "전체"
 
-    financials_5y_cols = ["매출액_5y", "영업이익_5y", "부채비율_5y", "이자보상배율_5y"]
+    # "5년 재무 상세"·"기업분석 체크리스트" 화면(수익가치주 찾기와 공용)에 필요한 전체 5년치
+    # 배열 — CAGR 계산에만 쓰는 매출액_5y/영업이익_5y 외에, 상세 테이블·체크리스트가 쓰는
+    # 나머지 항목(경상이익/현금흐름/건전성·성장성 지표)도 함께 로드해둔다.
+    financials_5y_cols = [
+        "연도_5y", "매출액_5y", "영업이익_5y", "경상이익_5y", "경상이익률_5y",
+        "CFO_5y", "CFI_5y", "CFF_5y", "FCF_5y",
+        "부채비율_5y", "당좌비율_5y", "이자보상배율_5y", "유보율_5y",
+        "매출성장률_5y", "매출채권회전율_5y", "재고자산회전율_5y",
+    ]
+    industry_avg_cols = [
+        "업종매칭_ECOS코드", "업종매칭명", "매출채권회전율_업계평균", "재고자산회전율_업계평균",
+    ]
     growth_extra_cols = [
         "ROIC(%)", "매출액_최근분기YoY(%)", "영업이익_최근분기YoY(%)",
         "연구개발비율(%)", "R&D최소기준(%)",
@@ -1129,6 +1140,9 @@ def run_growth_pipeline_from_cache(criteria):
         if col not in df.columns:
             df[col] = "[]"
         df[col] = df[col].fillna("[]").apply(json.loads)
+    for col in industry_avg_cols:
+        if col not in df.columns:
+            df[col] = None
     for col in growth_extra_cols:
         if col not in df.columns:
             df[col] = None
@@ -1173,13 +1187,13 @@ def run_growth_pipeline_from_cache(criteria):
     df_pass = df[cond].copy()
     df_pass["시가총액(억)"] = (df_pass["시가총액"] / 100_000_000).round().astype(int)
 
-    df_final = df_pass.rename(columns={"F_Score": "F-Score"})[[
+    df_final = df_pass.rename(columns={"F_Score": "F-Score", "OPM(%)": "영업이익률(%)"})[[
         "종목코드", "종목명", "시장구분", "시가총액(억)", "PER", "PEG",
         "매출액_3개년CAGR(%)", "매출액_최근분기YoY(%)",
-        "영업이익_3개년CAGR(%)", "영업이익_최근분기YoY(%)",
+        "영업이익_3개년CAGR(%)", "영업이익_최근분기YoY(%)", "영업이익률(%)",
         "ROE(%)", "ROIC(%)", "부채비율(%)", "이자보상배율",
         "연구개발비율(%)", "R&D최소기준(%)", "F-Score", "기준보고서",
-    ]]
+    ] + financials_5y_cols + industry_avg_cols]
 
     return df_final.sort_values(by="PEG", ascending=True)
 
