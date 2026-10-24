@@ -78,7 +78,7 @@ def fetch_china_pmi():
         if not points:
             return None
         latest = points[-1]
-        return {"PMI": latest["value"], "기준월": latest["date"]}
+        return {"PMI": float(latest["value"]), "기준월": latest["date"]}
     except Exception:
         return None
 
